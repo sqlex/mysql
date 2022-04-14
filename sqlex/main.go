@@ -108,7 +108,22 @@ func (v *inExprNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
 	return n, true
 }
 
-func (d *DatabaseAPI) GetInExprPositions(sql string) ([]InExprPosition, error) {
+type StatementType string
+
+const (
+	SelectStatementType StatementType = "Select"
+	InsertStatementType StatementType = "Insert"
+	UpdateStatementType StatementType = "Update"
+	DeleteStatementType StatementType = "Delete"
+	OtherStatementType  StatementType = "Other"
+)
+
+type StatementInfo struct {
+	Type            StatementType    `json:"type"`
+	InExprPositions []InExprPosition `json:"inExprPositions"`
+}
+
+func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 	//新建parser
 	p := parser.New()
 	//解析语句
@@ -116,10 +131,31 @@ func (d *DatabaseAPI) GetInExprPositions(sql string) ([]InExprPosition, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "SQL解析错误")
 	}
+
+	//获取语句类型
+	statementType := OtherStatementType
+	switch stmt.(type) {
+	case *ast.SelectStmt:
+		statementType = SelectStatementType
+	case *ast.SetOprStmt:
+		statementType = SelectStatementType
+	case *ast.InsertStmt:
+		statementType = InsertStatementType
+	case *ast.UpdateStmt:
+		statementType = UpdateStatementType
+	case *ast.DeleteStmt:
+		statementType = DeleteStatementType
+	default:
+		statementType = OtherStatementType
+	}
+
 	//遍历/获取所有的 in (list) 表达式
 	visitor := newInExprNodeVisitor(sql)
 	stmt.Accept(visitor)
-	return visitor.position, nil
+	return &StatementInfo{
+		Type:            statementType,
+		InExprPositions: visitor.position,
+	}, nil
 }
 
 func (d *DatabaseAPI) GetDDL(sessionID int64) (string, error) {
