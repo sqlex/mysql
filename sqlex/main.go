@@ -6,6 +6,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/parser"
 	"github.com/pingcap/tidb/parser/ast"
+	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
 	"math/rand"
 	"sync"
@@ -199,6 +200,8 @@ type Field struct {
 	Name     string   `json:"name"`
 	DBType   string   `json:"dbType"`
 	Length   int      `json:"length"`
+	Unsigned bool     `json:"unsigned"`
+	Binary   bool     `json:"binary"`
 	Decimal  int      `json:"decimal"`
 	Elements []string `json:"elements"`
 }
@@ -220,6 +223,8 @@ func (d *DatabaseAPI) GetFields(sessionID int64, sql string) ([]*Field, error) {
 				Name:     name.ColName.O,
 				DBType:   types.TypeToStr(col.RetType.Tp, col.RetType.Charset),
 				Length:   col.RetType.Flen,
+				Unsigned: mysql.HasUnsignedFlag(col.RetType.Flag),
+				Binary:   mysql.HasBinaryFlag(col.RetType.Flag),
 				Decimal:  col.RetType.Decimal,
 				Elements: col.RetType.Elems,
 			}
