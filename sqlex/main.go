@@ -201,6 +201,7 @@ type Field struct {
 	DBType   string   `json:"dbType"`
 	Length   int      `json:"length"`
 	Unsigned bool     `json:"unsigned"`
+	Binary   bool     `json:"binary"`
 	Decimal  int      `json:"decimal"`
 	Elements []string `json:"elements"`
 }
@@ -223,6 +224,7 @@ func (d *DatabaseAPI) GetFields(sessionID int64, sql string) ([]*Field, error) {
 				DBType:   types.TypeToStr(col.RetType.Tp, col.RetType.Charset),
 				Length:   col.RetType.Flen,
 				Unsigned: mysql.HasUnsignedFlag(col.RetType.Flag),
+				Binary:   mysql.HasBinaryFlag(col.RetType.Flag),
 				Decimal:  col.RetType.Decimal,
 				Elements: col.RetType.Elems,
 			}
