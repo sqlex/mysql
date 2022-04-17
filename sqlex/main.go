@@ -8,6 +8,7 @@ import (
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
+	driver "github.com/pingcap/tidb/types/parser_driver"
 	"math/rand"
 	"sync"
 	"unicode/utf8"
@@ -65,6 +66,16 @@ func (d *DatabaseAPI) ExecuteScript(sessionID int64, script string) error {
 	}
 }
 
+type StatementType string
+
+const (
+	SelectStatementType StatementType = "Select"
+	InsertStatementType StatementType = "Insert"
+	UpdateStatementType StatementType = "Update"
+	DeleteStatementType StatementType = "Delete"
+	OtherStatementType  StatementType = "Other"
+)
+
 type InExprPosition struct {
 	Not    bool `json:"not"`
 	Marker int  `json:"marker"`
@@ -109,19 +120,55 @@ func (v *inExprNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
 	return n, true
 }
 
-type StatementType string
+type LimitPosition struct {
+	HasOffset bool `json:"hasOffset"`
+	Count     int  `json:"count"`
+	Offset    int  `json:"offset"`
+}
 
-const (
-	SelectStatementType StatementType = "Select"
-	InsertStatementType StatementType = "Insert"
-	UpdateStatementType StatementType = "Update"
-	DeleteStatementType StatementType = "Delete"
-	OtherStatementType  StatementType = "Other"
-)
+type limitNodeVisitor struct {
+	sql      string
+	position []LimitPosition
+}
+
+func newLimitNodeVisitor(sql string) *limitNodeVisitor {
+	return &limitNodeVisitor{sql: sql, position: []LimitPosition{}}
+}
+
+func (l *limitNodeVisitor) Enter(n ast.Node) (node ast.Node, skipChildren bool) {
+	return n, false
+}
+
+func (l *limitNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
+	if limitNode, ok := n.(*ast.Limit); ok {
+		hasParamMarker := false
+		position := LimitPosition{}
+
+		//FIXME: 目前是通过 (*driver.ParamMarkerExpr) 来获取Offset的,可能不稳定
+		if limitNode.Offset != nil {
+			if offsetParamMarker, ok := limitNode.Offset.(*driver.ParamMarkerExpr); ok {
+				hasParamMarker = true
+				position.HasOffset = true
+				position.Offset = utf8.RuneCountInString(l.sql[:offsetParamMarker.Offset])
+			}
+		}
+		if limitNode.Count != nil {
+			if countParamMarker, ok := limitNode.Count.(*driver.ParamMarkerExpr); ok {
+				hasParamMarker = true
+				position.Count = utf8.RuneCountInString(l.sql[:countParamMarker.Offset])
+			}
+		}
+		if hasParamMarker {
+			l.position = append(l.position, position)
+		}
+	}
+	return n, true
+}
 
 type StatementInfo struct {
 	Type            StatementType    `json:"type"`
 	InExprPositions []InExprPosition `json:"inExprPositions"`
+	LimitPositions  []LimitPosition  `json:"limitPositions"`
 }
 
 func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
@@ -150,12 +197,18 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 		statementType = OtherStatementType
 	}
 
-	//遍历/获取所有的 in (list) 表达式
-	visitor := newInExprNodeVisitor(sql)
-	stmt.Accept(visitor)
+	//遍历/获取所有的 in (?) 表达式
+	inExprVisitor := newInExprNodeVisitor(sql)
+	stmt.Accept(inExprVisitor)
+
+	//遍历获取所有的 limit ?[,?] 表达式
+	limitVisitor := newLimitNodeVisitor(sql)
+	stmt.Accept(limitVisitor)
+
 	return &StatementInfo{
 		Type:            statementType,
-		InExprPositions: visitor.position,
+		InExprPositions: inExprVisitor.position,
+		LimitPositions:  limitVisitor.position,
 	}, nil
 }
 
