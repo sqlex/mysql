@@ -133,55 +133,9 @@ func (v *inExprNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
 	return n, true
 }
 
-type LimitPosition struct {
-	HasOffset bool `json:"hasOffset"`
-	Count     int  `json:"count"`
-	Offset    int  `json:"offset"`
-}
-
-type limitNodeVisitor struct {
-	sql      string
-	position []LimitPosition
-}
-
-func newLimitNodeVisitor(sql string) *limitNodeVisitor {
-	return &limitNodeVisitor{sql: sql, position: []LimitPosition{}}
-}
-
-func (l *limitNodeVisitor) Enter(n ast.Node) (node ast.Node, skipChildren bool) {
-	return n, false
-}
-
-func (l *limitNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
-	if limitNode, ok := n.(*ast.Limit); ok {
-		hasParamMarker := false
-		position := LimitPosition{}
-
-		//FIXME: 目前是通过 (*driver.ParamMarkerExpr) 来获取Offset的,可能不稳定
-		if limitNode.Offset != nil {
-			if offsetParamMarker, ok := limitNode.Offset.(*driver.ParamMarkerExpr); ok {
-				hasParamMarker = true
-				position.HasOffset = true
-				position.Offset = utf8.RuneCountInString(l.sql[:offsetParamMarker.Offset])
-			}
-		}
-		if limitNode.Count != nil {
-			if countParamMarker, ok := limitNode.Count.(*driver.ParamMarkerExpr); ok {
-				hasParamMarker = true
-				position.Count = utf8.RuneCountInString(l.sql[:countParamMarker.Offset])
-			}
-		}
-		if hasParamMarker {
-			l.position = append(l.position, position)
-		}
-	}
-	return n, true
-}
-
 type StatementInfo struct {
 	Type            StatementType    `json:"type"`
 	InExprPositions []InExprPosition `json:"inExprPositions"`
-	LimitPositions  []LimitPosition  `json:"limitPositions"`
 	HasLimit        bool             `json:"hasLimit"`
 	LimitRows       uint64           `json:"limitRows"`
 }
@@ -230,11 +184,6 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 	inExprVisitor := newInExprNodeVisitor(sql)
 	stmt.Accept(inExprVisitor)
 	info.InExprPositions = inExprVisitor.position
-
-	//遍历获取所有的 limit ?[,?] 表达式
-	limitVisitor := newLimitNodeVisitor(sql)
-	stmt.Accept(limitVisitor)
-	info.LimitPositions = limitVisitor.position
 
 	return info, nil
 }
