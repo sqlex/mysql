@@ -8,6 +8,7 @@ import (
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
+	"github.com/pingcap/tidb/planner/core"
 	driver "github.com/pingcap/tidb/types/parser_driver"
 	"math/rand"
 	"sync"
@@ -25,6 +26,18 @@ type DatabaseAPI struct {
 	database     *Database
 	sessions     map[int64]*Session
 	sessionsLock sync.Mutex
+}
+
+func NewDatabaseAPI() (*DatabaseAPI, error) {
+	database, err := NewMemoryDatabase()
+	if err != nil {
+		database.Close()
+		return nil, err
+	}
+	return &DatabaseAPI{
+		database: database,
+		sessions: map[int64]*Session{},
+	}, nil
 }
 
 func (d *DatabaseAPI) CreateSession(database string) (int64, error) {
@@ -169,47 +182,72 @@ type StatementInfo struct {
 	Type            StatementType    `json:"type"`
 	InExprPositions []InExprPosition `json:"inExprPositions"`
 	LimitPositions  []LimitPosition  `json:"limitPositions"`
+	HasLimit        bool             `json:"hasLimit"`
+	LimitRows       uint64           `json:"limitRows"`
 }
 
-func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
-	//新建parser
-	p := parser.New()
-	//解析语句
-	stmt, err := p.ParseOneStmt(sql, "", "")
-	if err != nil {
-		return nil, errors.Wrap(err, "SQL解析错误")
+func (d *DatabaseAPI) GetStatementInfo(sessionID int64, sql string) (*StatementInfo, error) {
+	d.sessionsLock.Lock()
+	if session, exist := d.sessions[sessionID]; exist {
+		d.sessionsLock.Unlock()
+
+		//新建parser
+		p := parser.New()
+		//解析语句
+		stmt, err := p.ParseOneStmt(sql, "", "")
+		if err != nil {
+			return nil, errors.Wrap(err, "SQL解析错误")
+		}
+
+		info := &StatementInfo{
+			Type: OtherStatementType,
+		}
+
+		//获取语句类型
+		switch stmt.(type) {
+		case *ast.SelectStmt:
+			info.Type = SelectStatementType
+		case *ast.SetOprStmt:
+			info.Type = SelectStatementType
+		case *ast.InsertStmt:
+			info.Type = InsertStatementType
+		case *ast.UpdateStmt:
+			info.Type = UpdateStatementType
+		case *ast.DeleteStmt:
+			info.Type = DeleteStatementType
+		default:
+			info.Type = OtherStatementType
+		}
+
+		//遍历/获取所有的 in (?) 表达式
+		inExprVisitor := newInExprNodeVisitor(sql)
+		stmt.Accept(inExprVisitor)
+		info.InExprPositions = inExprVisitor.position
+
+		//遍历获取所有的 limit ?[,?] 表达式
+		limitVisitor := newLimitNodeVisitor(sql)
+		stmt.Accept(limitVisitor)
+		info.LimitPositions = limitVisitor.position
+
+		//判断其是否为limit 1语句
+		if info.Type == SelectStatementType {
+			//获取其逻辑计划
+			plan, err := session.GetPlan(context.Background(), sql)
+			if err != nil {
+				return nil, err
+			}
+			//判断计划顶层
+			if limitPlan, ok := plan.(*core.LogicalLimit); ok {
+				info.HasLimit = true
+				info.LimitRows = limitPlan.Count
+			}
+		}
+
+		return info, nil
+	} else {
+		d.sessionsLock.Unlock()
+		return nil, errors.New("Session不存在")
 	}
-
-	//获取语句类型
-	statementType := OtherStatementType
-	switch stmt.(type) {
-	case *ast.SelectStmt:
-		statementType = SelectStatementType
-	case *ast.SetOprStmt:
-		statementType = SelectStatementType
-	case *ast.InsertStmt:
-		statementType = InsertStatementType
-	case *ast.UpdateStmt:
-		statementType = UpdateStatementType
-	case *ast.DeleteStmt:
-		statementType = DeleteStatementType
-	default:
-		statementType = OtherStatementType
-	}
-
-	//遍历/获取所有的 in (?) 表达式
-	inExprVisitor := newInExprNodeVisitor(sql)
-	stmt.Accept(inExprVisitor)
-
-	//遍历获取所有的 limit ?[,?] 表达式
-	limitVisitor := newLimitNodeVisitor(sql)
-	stmt.Accept(limitVisitor)
-
-	return &StatementInfo{
-		Type:            statementType,
-		InExprPositions: inExprVisitor.position,
-		LimitPositions:  limitVisitor.position,
-	}, nil
 }
 
 func (d *DatabaseAPI) GetDDL(sessionID int64) (string, error) {

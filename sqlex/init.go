@@ -16,11 +16,8 @@ func init() {
 	//初始化ffi容器
 	container = NewFFIContainer()
 	//数据库管理模块
-	database, err := NewMemoryDatabase()
-	err = container.Inject(&DatabaseAPI{
-		database: database,
-		sessions: map[int64]*Session{},
-	})
+	databaseAPI, err := NewDatabaseAPI()
+	err = container.Inject(databaseAPI)
 	if err != nil {
 		panic(err)
 	}
