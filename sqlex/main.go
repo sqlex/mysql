@@ -238,8 +238,10 @@ func (d *DatabaseAPI) GetStatementInfo(sessionID int64, sql string) (*StatementI
 			}
 			//判断计划顶层
 			if limitPlan, ok := plan.(*core.LogicalLimit); ok {
-				info.HasLimit = true
-				info.LimitRows = limitPlan.Count
+				if limitPlan.Count != 0 {
+					info.HasLimit = true
+					info.LimitRows = limitPlan.Count
+				}
 			}
 		}
 
