@@ -153,23 +153,17 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 		Type: OtherStatementType,
 	}
 
+	//顶级limit节点
+	var topLevelLimitNode *ast.Limit
+
 	//获取语句类型
 	switch stmt := stmt.(type) {
 	case *ast.SelectStmt:
 		info.Type = SelectStatementType
-		//获取这个select的limit,判断其是不是固定行数
-		if stmt.Limit != nil {
-			if stmt.Limit.Count != nil {
-				if countNode, ok := stmt.Limit.Count.(*driver.ValueExpr); ok {
-					if countNode.Kind() == types2.KindUint64 {
-						info.HasLimit = true
-						info.LimitRows = countNode.GetUint64()
-					}
-				}
-			}
-		}
+		topLevelLimitNode = stmt.Limit
 	case *ast.SetOprStmt:
 		info.Type = SelectStatementType
+		topLevelLimitNode = stmt.Limit
 	case *ast.InsertStmt:
 		info.Type = InsertStatementType
 	case *ast.UpdateStmt:
@@ -178,6 +172,18 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 		info.Type = DeleteStatementType
 	default:
 		info.Type = OtherStatementType
+	}
+
+	//判断顶级limit节点是否有常量值
+	if topLevelLimitNode != nil {
+		if topLevelLimitNode.Count != nil {
+			if countNode, ok := topLevelLimitNode.Count.(*driver.ValueExpr); ok {
+				if countNode.Kind() == types2.KindUint64 {
+					info.HasLimit = true
+					info.LimitRows = countNode.GetUint64()
+				}
+			}
+		}
 	}
 
 	//遍历/获取所有的 in (?) 表达式
