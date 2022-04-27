@@ -2,10 +2,12 @@ package main
 
 import "C"
 import (
+	"bytes"
 	"context"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/parser"
 	"github.com/pingcap/tidb/parser/ast"
+	"github.com/pingcap/tidb/parser/format"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
 	types2 "github.com/pingcap/tidb/types"
@@ -192,6 +194,28 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 	info.InExprPositions = inExprVisitor.position
 
 	return info, nil
+}
+
+func (d *DatabaseAPI) GetSQLsOfScript(script string) ([]string, error) {
+	//新建parser
+	p := parser.New()
+	//解析script
+	stmts, _, err := p.ParseSQL(script)
+	if err != nil {
+		return nil, errors.Wrap(err, "SQL解析错误")
+	}
+	sqls := make([]string, len(stmts))
+	//反向构建为string
+	for i := range stmts {
+		stmt := stmts[i]
+		buffer := bytes.NewBuffer(nil)
+		err = stmt.Restore(format.NewRestoreCtx(format.DefaultRestoreFlags, buffer))
+		if err != nil {
+			return nil, errors.Wrap(err, "无法restore为SQL文本")
+		}
+		sqls[i] = buffer.String()
+	}
+	return sqls, nil
 }
 
 func (d *DatabaseAPI) GetDDL(sessionID int64) (string, error) {
