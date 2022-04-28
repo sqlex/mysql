@@ -256,13 +256,14 @@ func (d *DatabaseAPI) GetAllTable(sessionID int64) ([]string, error) {
 
 // Field 字段
 type Field struct {
-	Name     string   `json:"name"`
-	DBType   string   `json:"dbType"`
-	Length   int      `json:"length"`
-	Unsigned bool     `json:"unsigned"`
-	Binary   bool     `json:"binary"`
-	Decimal  int      `json:"decimal"`
-	Elements []string `json:"elements"`
+	Name     string      `json:"name"`
+	TypeId   JavaSQLType `json:"typeId"`
+	TypeName string      `json:"typeName"`
+	Length   int         `json:"length"`
+	Unsigned bool        `json:"unsigned"`
+	Binary   bool        `json:"binary"`
+	Decimal  int         `json:"decimal"`
+	Elements []string    `json:"elements"`
 }
 
 func (d *DatabaseAPI) GetFields(sessionID int64, sql string) ([]*Field, error) {
@@ -280,7 +281,8 @@ func (d *DatabaseAPI) GetFields(sessionID int64, sql string) ([]*Field, error) {
 			col := plan.Schema().Columns[index]
 			fields[index] = &Field{
 				Name:     name.ColName.O,
-				DBType:   types.TypeToStr(col.RetType.Tp, col.RetType.Charset),
+				TypeId:   mySQLType2JavaType(col.RetType.Tp, false),
+				TypeName: types.TypeToStr(col.RetType.Tp, col.RetType.Charset),
 				Length:   col.RetType.Flen,
 				Unsigned: mysql.HasUnsignedFlag(col.RetType.Flag),
 				Binary:   mysql.HasBinaryFlag(col.RetType.Flag),
