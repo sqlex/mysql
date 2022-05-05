@@ -8,11 +8,13 @@ import (
 	"github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/session"
 	"strings"
+	"sync"
 )
 
 type Session struct {
 	session.Session
-	planBuilder *core.PlanBuilder
+	builderMutex sync.Mutex
+	planBuilder  *core.PlanBuilder
 }
 
 func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
@@ -23,6 +25,8 @@ func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
 	if len(stmts) <= 0 {
 		return nil, errors.New("不存在合法的SQL语句")
 	}
+	s.builderMutex.Lock()
+	defer s.builderMutex.Unlock()
 	plan, err := s.planBuilder.Build(ctx, stmts[0])
 	if err != nil {
 		return nil, errors.Wrap(err, "无法创建逻辑计划")
