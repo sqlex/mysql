@@ -135,11 +135,53 @@ func (v *inExprNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
 	return n, true
 }
 
+type IsNullExprPosition struct {
+	Not    bool `json:"not"`
+	Marker int  `json:"marker"`
+	Start  int  `json:"start"`
+	End    int  `json:"end"`
+}
+
+type isNullExprNodeVisitor struct {
+	sql      string
+	position []IsNullExprPosition
+}
+
+func newIsNullExprNodeVisitor(sql string) *isNullExprNodeVisitor {
+	return &isNullExprNodeVisitor{sql: sql, position: []IsNullExprPosition{}}
+}
+
+func (v *isNullExprNodeVisitor) Enter(n ast.Node) (node ast.Node, skipChildren bool) {
+	return n, false
+}
+
+func (v *isNullExprNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
+	if isNullExprNode, ok := n.(*ast.IsNullExpr); ok {
+		if isNullExprNode.Expr != nil {
+			if paramMarkerExpr, ok := isNullExprNode.Expr.(ast.ParamMarkerExpr); ok {
+				//一路查找,直到找到 "null"
+				for index := paramMarkerExpr.OriginTextPosition(); index+3 < len(v.sql); index++ {
+					if v.sql[index:index+4] == "null" {
+						v.position = append(v.position, IsNullExprPosition{
+							Not:    isNullExprNode.Not,
+							Marker: utf8.RuneCountInString(v.sql[:paramMarkerExpr.OriginTextPosition()]),
+							Start:  utf8.RuneCountInString(v.sql[:isNullExprNode.OriginTextPosition()]),
+							End:    utf8.RuneCountInString(v.sql[:index+4]),
+						})
+					}
+				}
+			}
+		}
+	}
+	return n, true
+}
+
 type StatementInfo struct {
-	Type            StatementType    `json:"type"`
-	InExprPositions []InExprPosition `json:"inExprPositions"`
-	HasLimit        bool             `json:"hasLimit"`
-	LimitRows       uint64           `json:"limitRows"`
+	Type                StatementType        `json:"type"`
+	InExprPositions     []InExprPosition     `json:"inExprPositions"`
+	IsNullExprPositions []IsNullExprPosition `json:"isNullExprPositions"`
+	HasLimit            bool                 `json:"hasLimit"`
+	LimitRows           uint64               `json:"limitRows"`
 }
 
 func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
@@ -192,6 +234,11 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 	inExprVisitor := newInExprNodeVisitor(sql)
 	stmt.Accept(inExprVisitor)
 	info.InExprPositions = inExprVisitor.position
+
+	//遍历/获取所有的 ? is null 表达式
+	isNullExprVisitor := newIsNullExprNodeVisitor(sql)
+	stmt.Accept(isNullExprVisitor)
+	info.IsNullExprPositions = isNullExprVisitor.position
 
 	return info, nil
 }
