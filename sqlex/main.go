@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/parser"
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/format"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
+	"github.com/pingcap/tidb/planner/core"
 	types2 "github.com/pingcap/tidb/types"
 	driver "github.com/pingcap/tidb/types/parser_driver"
 	"math/rand"
@@ -312,7 +314,24 @@ type Field struct {
 	Elements []string `json:"elements"`
 }
 
-func (d *DatabaseAPI) GetFields(sessionID int64, sql string) ([]*Field, error) {
+// PlanInfo 计划信息
+type PlanInfo struct {
+	Fields    []*Field `json:"fields"`
+	MaxOneRow bool     `json:"maxOneRow"`
+}
+
+func buildKeyInfo(lp core.LogicalPlan) {
+	for _, child := range lp.Children() {
+		buildKeyInfo(child)
+	}
+	childSchema := make([]*expression.Schema, len(lp.Children()))
+	for i, child := range lp.Children() {
+		childSchema[i] = child.Schema()
+	}
+	lp.BuildKeyInfo(lp.Schema(), childSchema)
+}
+
+func (d *DatabaseAPI) GetPlanInfo(sessionID int64, sql string) (*PlanInfo, error) {
 	d.sessionsLock.Lock()
 	if session, exist := d.sessions[sessionID]; exist {
 		d.sessionsLock.Unlock()
@@ -335,7 +354,14 @@ func (d *DatabaseAPI) GetFields(sessionID int64, sql string) ([]*Field, error) {
 				Elements: col.RetType.Elems,
 			}
 		}
-		return fields, nil
+		planInfo := &PlanInfo{Fields: fields}
+		//构建索引信息
+		if logicalPlan, ok := plan.(core.LogicalPlan); ok {
+			buildKeyInfo(logicalPlan)
+			planInfo.MaxOneRow = logicalPlan.MaxOneRow()
+		}
+		//返回
+		return planInfo, nil
 	} else {
 		d.sessionsLock.Unlock()
 		return nil, errors.New("Session不存在")
