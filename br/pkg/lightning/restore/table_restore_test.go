@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -62,6 +61,7 @@ import (
 	"github.com/pingcap/tidb/table/tables"
 	"github.com/pingcap/tidb/types"
 	tmock "github.com/pingcap/tidb/util/mock"
+	"github.com/pingcap/tidb/util/promutil"
 	filter "github.com/pingcap/tidb/util/table-filter"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -339,7 +339,6 @@ func (s *tableRestoreSuite) TestRestoreEngineFailed() {
 		backend:        backend.MakeBackend(mockBackend),
 		errorSummaries: makeErrorSummaries(log.L()),
 		saveCpCh:       make(chan saveCp, 1),
-		diskQuotaLock:  newDiskQuotaLock(),
 	}
 	defer close(rc.saveCpCh)
 	go func() {
@@ -833,7 +832,7 @@ func (s *tableRestoreSuite) TestImportKVSuccess() {
 		CloseEngine(ctx, nil, engineUUID).
 		Return(nil)
 	mockBackend.EXPECT().
-		ImportEngine(ctx, engineUUID, gomock.Any()).
+		ImportEngine(ctx, engineUUID, gomock.Any(), gomock.Any()).
 		Return(nil)
 	mockBackend.EXPECT().
 		CleanupEngine(ctx, engineUUID).
@@ -868,7 +867,7 @@ func (s *tableRestoreSuite) TestImportKVFailure() {
 		CloseEngine(ctx, nil, engineUUID).
 		Return(nil)
 	mockBackend.EXPECT().
-		ImportEngine(ctx, engineUUID, gomock.Any()).
+		ImportEngine(ctx, engineUUID, gomock.Any(), gomock.Any()).
 		Return(errors.Annotate(context.Canceled, "fake import error"))
 
 	closedEngine, err := importer.UnsafeCloseEngineWithUUID(ctx, nil, "tag", engineUUID)
@@ -881,12 +880,13 @@ func (s *tableRestoreSuite) TestTableRestoreMetrics() {
 	controller := gomock.NewController(s.T())
 	defer controller.Finish()
 
-	chunkPendingBase := metric.ReadCounter(metric.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
-	chunkFinishedBase := metric.ReadCounter(metric.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
-	engineFinishedBase := metric.ReadCounter(metric.ProcessedEngineCounter.WithLabelValues("imported", metric.TableResultSuccess))
-	tableFinishedBase := metric.ReadCounter(metric.TableCounter.WithLabelValues("index_imported", metric.TableResultSuccess))
+	metrics := metric.NewMetrics(promutil.NewDefaultFactory())
+	chunkPendingBase := metric.ReadCounter(metrics.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
+	chunkFinishedBase := metric.ReadCounter(metrics.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
+	engineFinishedBase := metric.ReadCounter(metrics.ProcessedEngineCounter.WithLabelValues("imported", metric.TableResultSuccess))
+	tableFinishedBase := metric.ReadCounter(metrics.TableCounter.WithLabelValues("index_imported", metric.TableResultSuccess))
 
-	ctx := context.Background()
+	ctx := metric.NewContext(context.Background(), metrics)
 	chptCh := make(chan saveCp)
 	defer close(chptCh)
 	cfg := config.NewConfig()
@@ -901,7 +901,8 @@ func (s *tableRestoreSuite) TestTableRestoreMetrics() {
 
 	cfg.Mydumper.SourceDir = "."
 	cfg.Mydumper.CSV.Header = false
-	cfg.TikvImporter.Backend = config.BackendImporter
+	cfg.TikvImporter.Backend = config.BackendLocal
+	cfg.TikvImporter.SortedKVDir = "/tmp/sorted"
 	tls, err := cfg.ToTLS()
 	require.NoError(s.T(), err)
 
@@ -936,8 +937,8 @@ func (s *tableRestoreSuite) TestTableRestoreMetrics() {
 		closedEngineLimit: worker.NewPool(ctx, 1, "closed_engine"),
 		store:             s.store,
 		metaMgrBuilder:    noopMetaMgrBuilder{},
-		diskQuotaLock:     newDiskQuotaLock(),
 		errorMgr:          errormanager.New(nil, cfg),
+		taskMgr:           noopTaskMetaMgr{},
 	}
 	go func() {
 		for scp := range chptCh {
@@ -957,15 +958,15 @@ func (s *tableRestoreSuite) TestTableRestoreMetrics() {
 	err = rc.restoreTables(ctx)
 	require.NoError(s.T(), err)
 
-	chunkPending := metric.ReadCounter(metric.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
-	chunkFinished := metric.ReadCounter(metric.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
+	chunkPending := metric.ReadCounter(metrics.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
+	chunkFinished := metric.ReadCounter(metrics.ChunkCounter.WithLabelValues(metric.ChunkStatePending))
 	require.Equal(s.T(), float64(7), chunkPending-chunkPendingBase)
 	require.Equal(s.T(), chunkPending-chunkPendingBase, chunkFinished-chunkFinishedBase)
 
-	engineFinished := metric.ReadCounter(metric.ProcessedEngineCounter.WithLabelValues("imported", metric.TableResultSuccess))
+	engineFinished := metric.ReadCounter(metrics.ProcessedEngineCounter.WithLabelValues("imported", metric.TableResultSuccess))
 	require.Equal(s.T(), float64(8), engineFinished-engineFinishedBase)
 
-	tableFinished := metric.ReadCounter(metric.TableCounter.WithLabelValues("index_imported", metric.TableResultSuccess))
+	tableFinished := metric.ReadCounter(metrics.TableCounter.WithLabelValues("index_imported", metric.TableResultSuccess))
 	require.Equal(s.T(), float64(1), tableFinished-tableFinishedBase)
 }
 
@@ -996,9 +997,14 @@ func (s *tableRestoreSuite) TestSaveStatusCheckpoint() {
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), 0, len(rc.errorSummaries.summary))
 
-	err = rc.saveStatusCheckpoint(context.Background(), common.UniqueTable("test", "tbl"), indexEngineID, &net.DNSError{IsTimeout: true}, checkpoints.CheckpointStatusImported)
+	err = rc.saveStatusCheckpoint(
+		context.Background(),
+		common.UniqueTable("test", "tbl"), indexEngineID,
+		common.ErrChecksumMismatch.GenWithStackByArgs(0, 0, 0, 0, 0, 0),
+		checkpoints.CheckpointStatusImported,
+	)
 	require.NoError(s.T(), err)
-	require.Equal(s.T(), 0, len(rc.errorSummaries.summary))
+	require.Equal(s.T(), 1, len(rc.errorSummaries.summary))
 
 	start := time.Now()
 	err = rc.saveStatusCheckpoint(context.Background(), common.UniqueTable("test", "tbl"), indexEngineID, nil, checkpoints.CheckpointStatusImported)
@@ -1324,7 +1330,7 @@ func (s *tableRestoreSuite) TestEstimate() {
 		SQLMode:        s.cfg.TiDB.SQLMode,
 		Timestamp:      0,
 		AutoRandomSeed: 0,
-	})).AnyTimes()
+	}, nil)).AnyTimes()
 	importer := backend.MakeBackend(mockBackend)
 	s.cfg.TikvImporter.Backend = config.BackendLocal
 
@@ -1409,11 +1415,8 @@ func (s *tableRestoreSuite) TestSchemaIsValid() {
 									},
 									{
 										// colB doesn't have the default value
-										Name: model.NewCIStr("colB"),
-										FieldType: types.FieldType{
-											// not null flag
-											Flag: 1,
-										},
+										Name:      model.NewCIStr("colB"),
+										FieldType: types.NewFieldTypeBuilder().SetType(0).SetFlag(1).Build(),
 									},
 								},
 							},
@@ -1564,10 +1567,8 @@ func (s *tableRestoreSuite) TestSchemaIsValid() {
 									},
 									{
 										// colC doesn't have the default value
-										Name: model.NewCIStr("colC"),
-										FieldType: types.FieldType{
-											Flag: 1,
-										},
+										Name:      model.NewCIStr("colC"),
+										FieldType: types.NewFieldTypeBuilder().SetType(0).SetFlag(1).Build(),
 									},
 								},
 							},
@@ -1617,10 +1618,8 @@ func (s *tableRestoreSuite) TestSchemaIsValid() {
 								Columns: []*model.ColumnInfo{
 									{
 										// colB doesn't have the default value
-										Name: model.NewCIStr("colB"),
-										FieldType: types.FieldType{
-											Flag: 1,
-										},
+										Name:      model.NewCIStr("colB"),
+										FieldType: types.NewFieldTypeBuilder().SetType(0).SetFlag(1).Build(),
 									},
 									{
 										// colC has the default value
@@ -1822,16 +1821,12 @@ func (s *tableRestoreSuite) TestGBKEncodedSchemaIsValid() {
 						Core: &model.TableInfo{
 							Columns: []*model.ColumnInfo{
 								{
-									Name: model.NewCIStr("colA"),
-									FieldType: types.FieldType{
-										Flag: 1,
-									},
+									Name:      model.NewCIStr("colA"),
+									FieldType: types.NewFieldTypeBuilder().SetType(0).SetFlag(1).Build(),
 								},
 								{
-									Name: model.NewCIStr("colB"),
-									FieldType: types.FieldType{
-										Flag: 1,
-									},
+									Name:      model.NewCIStr("colB"),
+									FieldType: types.NewFieldTypeBuilder().SetType(0).SetFlag(1).Build(),
 								},
 							},
 						},

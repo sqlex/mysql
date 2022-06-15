@@ -32,10 +32,10 @@ import (
 	"github.com/pingcap/tidb/br/pkg/lightning/log"
 	"github.com/pingcap/tidb/br/pkg/lightning/metric"
 	"github.com/pingcap/tidb/br/pkg/pdutil"
-	"github.com/pingcap/tidb/br/pkg/utils"
 	tidbcfg "github.com/pingcap/tidb/config"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/store/driver"
+	"github.com/pingcap/tidb/util/mathutil"
 	"github.com/pingcap/tipb/go-tipb"
 	"github.com/tikv/client-go/v2/oracle"
 	pd "github.com/tikv/pd/client"
@@ -153,7 +153,9 @@ func (e *tidbChecksumExecutor) Checksum(ctx context.Context, tableInfo *checkpoi
 		"ADMIN CHECKSUM TABLE "+tableName, &cs.Schema, &cs.Table, &cs.Checksum, &cs.TotalKVs, &cs.TotalBytes,
 	)
 	dur := task.End(zap.ErrorLevel, err)
-	metric.ChecksumSecondsHistogram.Observe(dur.Seconds())
+	if m, ok := metric.FromContext(ctx); ok {
+		m.ChecksumSecondsHistogram.Observe(dur.Seconds())
+	}
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -173,7 +175,9 @@ func DoChecksum(ctx context.Context, table *checkpoints.TidbTableInfo) (*RemoteC
 
 	cs, err := manager.Checksum(ctx, table)
 	dur := task.End(zap.ErrorLevel, err)
-	metric.ChecksumSecondsHistogram.Observe(dur.Seconds())
+	if m, ok := metric.FromContext(ctx); ok {
+		m.ChecksumSecondsHistogram.Observe(dur.Seconds())
+	}
 
 	return cs, err
 }
@@ -310,11 +314,11 @@ func (e *tikvChecksumManager) checksumDB(ctx context.Context, tableInfo *checkpo
 			zap.Int("concurrency", distSQLScanConcurrency), zap.Int("retry", i))
 
 		// do not retry context.Canceled error
-		if !utils.IsRetryableError(err) {
+		if !common.IsRetryableError(err) {
 			break
 		}
 		if distSQLScanConcurrency > minDistSQLScanConcurrency {
-			distSQLScanConcurrency = utils.MaxInt(distSQLScanConcurrency/2, minDistSQLScanConcurrency)
+			distSQLScanConcurrency = mathutil.Max(distSQLScanConcurrency/2, minDistSQLScanConcurrency)
 		}
 	}
 

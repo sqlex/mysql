@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/config"
 	"github.com/pingcap/tidb/ddl"
@@ -33,7 +32,6 @@ import (
 	"github.com/pingcap/tidb/errno"
 	tmysql "github.com/pingcap/tidb/errno"
 	"github.com/pingcap/tidb/kv"
-	"github.com/pingcap/tidb/meta"
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
@@ -41,23 +39,22 @@ import (
 	"github.com/pingcap/tidb/session"
 	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/sessionctx/variable"
+	"github.com/pingcap/tidb/sessiontxn"
 	"github.com/pingcap/tidb/table"
 	"github.com/pingcap/tidb/table/tables"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/testkit"
 	"github.com/pingcap/tidb/testkit/external"
 	"github.com/pingcap/tidb/types"
-	"github.com/pingcap/tidb/util/admin"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/dbterror"
 	"github.com/pingcap/tidb/util/logutil"
-	"github.com/pingcap/tidb/util/mock"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
 func checkGlobalIndexCleanUpDone(t *testing.T, ctx sessionctx.Context, tblInfo *model.TableInfo, idxInfo *model.IndexInfo, pid int64) int {
-	require.NoError(t, ctx.NewTxn(context.Background()))
+	require.NoError(t, sessiontxn.NewTxn(context.Background(), ctx))
 	txn, err := ctx.Txn(true)
 	require.NoError(t, err)
 	defer func() {
@@ -160,7 +157,7 @@ func TestCreateTableWithPartition(t *testing.T) {
 	);`
 	tk.MustGetErrCode(sql4, tmysql.ErrPartitionMaxvalue)
 
-	_, err = tk.Exec(`CREATE TABLE rc (
+	tk.MustExec(`CREATE TABLE rc (
 		a INT NOT NULL,
 		b INT NOT NULL,
 		c INT NOT NULL
@@ -171,7 +168,6 @@ func TestCreateTableWithPartition(t *testing.T) {
 	partition p3 values less than (65,30,13),
 	partition p4 values less than (maxvalue,30,40)
 	);`)
-	require.NoError(t, err)
 
 	sql6 := `create table employees (
 	id int not null,
@@ -214,7 +210,7 @@ func TestCreateTableWithPartition(t *testing.T) {
 	);`
 	tk.MustGetErrCode(sql9, tmysql.ErrPartitionFunctionIsNotAllowed)
 
-	_, err = tk.Exec(`CREATE TABLE t9 (
+	tk.MustGetDBError(`CREATE TABLE t9 (
 		a INT NOT NULL,
 		b INT NOT NULL,
 		c INT NOT NULL
@@ -223,8 +219,7 @@ func TestCreateTableWithPartition(t *testing.T) {
 	partition p0 values less than (10),
 	partition p2 values less than (20),
 	partition p3 values less than (20)
-	);`)
-	require.True(t, dbterror.ErrRangeNotIncreasing.Equal(err))
+	);`, dbterror.ErrRangeNotIncreasing)
 
 	tk.MustGetErrCode(`create TABLE t10 (c1 int,c2 int) partition by range(c1 / c2 ) (partition p0 values less than (2));`, tmysql.ErrPartitionFunctionIsNotAllowed)
 
@@ -546,6 +541,13 @@ create table log_message_1 (
 			dbterror.ErrRangeNotIncreasing,
 		},
 		{
+			"create table t(a char(10) collate utf8mb4_bin) " +
+				"partition by range columns (a) (" +
+				"partition p0 values less than ('g'), " +
+				"partition p1 values less than ('A'));",
+			dbterror.ErrRangeNotIncreasing,
+		},
+		{
 			"CREATE TABLE t1(c0 INT) PARTITION BY HASH((NOT c0)) PARTITIONS 2;",
 			dbterror.ErrPartitionFunctionIsNotAllowed,
 		},
@@ -618,6 +620,14 @@ create table log_message_1 (
     	partition p1 values less than ('G'));`)
 
 	tk.MustExec("drop table if exists t;")
+	tk.MustExec(`create table t (a varchar(255) charset utf8mb4 collate utf8mb4_bin) ` +
+		`partition by range columns (a) ` +
+		`(partition pnull values less than (""),` +
+		`partition puppera values less than ("AAA"),` +
+		`partition plowera values less than ("aaa"),` +
+		`partition pmax values less than (MAXVALUE))`)
+
+	tk.MustExec("drop table if exists t;")
 	tk.MustExec(`create table t(a int) partition by range columns (a) (
     	partition p0 values less than (10),
     	partition p1 values less than (20));`)
@@ -630,6 +640,114 @@ create table log_message_1 (
 	tk.MustExec(`alter table t add partition (partition p1 values less than (X'0D'), partition p2 values less than (X'0E'));`)
 	tk.MustExec(`insert into t values (X'0B'), (X'0C'), (X'0D')`)
 	tk.MustQuery(`select * from t where a < X'0D' order by a`).Check(testkit.Rows("\x0B", "\x0C"))
+}
+
+func TestPartitionRangeColumnsCollate(t *testing.T) {
+	store, clean := testkit.CreateMockStore(t)
+	defer clean()
+	tk := testkit.NewTestKit(t, store)
+	tk.MustExec("create schema PartitionRangeColumnsCollate")
+	tk.MustExec("use PartitionRangeColumnsCollate")
+	tk.MustExec(`create table t (a varchar(255) charset utf8mb4 collate utf8mb4_bin) partition by range columns (a)
+ (partition p0A values less than ("A"),
+ partition p1AA values less than ("AA"),
+ partition p2Aa values less than ("Aa"),
+ partition p3BB values less than ("BB"),
+ partition p4Bb values less than ("Bb"),
+ partition p5aA values less than ("aA"),
+ partition p6aa values less than ("aa"),
+ partition p7bB values less than ("bB"),
+ partition p8bb values less than ("bb"),
+ partition pMax values less than (MAXVALUE))`)
+	tk.MustExec(`insert into t values ("A"),("a"),("b"),("B"),("aa"),("AA"),("aA"),("Aa"),("BB"),("Bb"),("bB"),("bb"),("AB"),("BA"),("Ab"),("Ba"),("aB"),("bA"),("ab"),("ba")`)
+	tk.MustQuery(`explain select * from t where a = "AA" collate utf8mb4_general_ci`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  eq(partitionrangecolumnscollate.t.a, "AA")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a = "AA" collate utf8mb4_general_ci`).Sort().Check(testkit.Rows("AA", "Aa", "aA", "aa"))
+	tk.MustQuery(`explain select * from t where a = "aa" collate utf8mb4_general_ci`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  eq(partitionrangecolumnscollate.t.a, "aa")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a = "aa" collate utf8mb4_general_ci`).Sort().Check(testkit.Rows("AA", "Aa", "aA", "aa"))
+	tk.MustQuery(`explain select * from t where a >= "aa" collate utf8mb4_general_ci`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  ge(partitionrangecolumnscollate.t.a, "aa")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a >= "aa" collate utf8mb4_general_ci`).Sort().Check(testkit.Rows(
+		"AA", "AB", "Aa", "Ab", "B", "BA", "BB", "Ba", "Bb", "aA", "aB", "aa", "ab", "b", "bA", "bB", "ba", "bb"))
+	tk.MustQuery(`explain select * from t where a > "aa" collate utf8mb4_general_ci`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  gt(partitionrangecolumnscollate.t.a, "aa")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a > "aa" collate utf8mb4_general_ci`).Sort().Check(testkit.Rows(
+		"AB", "Ab", "B", "BA", "BB", "Ba", "Bb", "aB", "ab", "b", "bA", "bB", "ba", "bb"))
+	tk.MustQuery(`explain select * from t where a <= "aa" collate utf8mb4_general_ci`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  le(partitionrangecolumnscollate.t.a, "aa")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a <= "aa" collate utf8mb4_general_ci`).Sort().Check(testkit.Rows(
+		"A", "AA", "Aa", "a", "aA", "aa"))
+	tk.MustQuery(`explain select * from t where a < "aa" collate utf8mb4_general_ci`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  lt(partitionrangecolumnscollate.t.a, "aa")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a < "aa" collate utf8mb4_general_ci`).Sort().Check(testkit.Rows(
+		"A", "a"))
+
+	tk.MustExec("drop table t")
+	tk.MustExec(` create table t (a varchar(255) charset utf8mb4 collate utf8mb4_general_ci) partition by range columns (a)
+(partition p0 values less than ("A"),
+ partition p1 values less than ("aa"),
+ partition p2 values less than ("AAA"),
+ partition p3 values less than ("aaaa"),
+ partition p4 values less than ("B"),
+ partition p5 values less than ("bb"),
+ partition pMax values less than (MAXVALUE))`)
+	tk.MustExec(`insert into t values ("A"),("a"),("b"),("B"),("aa"),("AA"),("aA"),("Aa"),("BB"),("Bb"),("bB"),("bb"),("AB"),("BA"),("Ab"),("Ba"),("aB"),("bA"),("ab"),("ba"),("ä"),("ÄÄÄ")`)
+	tk.MustQuery(`explain select * from t where a = "aa" collate utf8mb4_general_ci`).Check(testkit.Rows(
+		`TableReader_7 10.00 root partition:p2 data:Selection_6`,
+		`└─Selection_6 10.00 cop[tikv]  eq(partitionrangecolumnscollate.t.a, "aa")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a = "aa" collate utf8mb4_general_ci`).Sort().Check(testkit.Rows(
+		"AA", "Aa", "aA", "aa"))
+	tk.MustQuery(`explain select * from t where a = "aa" collate utf8mb4_bin`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:p2 data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  eq(partitionrangecolumnscollate.t.a, "aa")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a = "aa" collate utf8mb4_bin`).Sort().Check(testkit.Rows("aa"))
+	// 'a' < 'b' < 'ä' in _bin
+	tk.MustQuery(`explain select * from t where a = "ä" collate utf8mb4_bin`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:p1 data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  eq(partitionrangecolumnscollate.t.a, "ä")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a = "ä" collate utf8mb4_bin`).Sort().Check(testkit.Rows("ä"))
+	tk.MustQuery(`explain select * from t where a = "b" collate utf8mb4_bin`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:p5 data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  eq(partitionrangecolumnscollate.t.a, "b")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a = "b" collate utf8mb4_bin`).Sort().Check(testkit.Rows("b"))
+	tk.MustQuery(`explain select * from t where a <= "b" collate utf8mb4_bin`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  le(partitionrangecolumnscollate.t.a, "b")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a <= "b" collate utf8mb4_bin`).Sort().Check(testkit.Rows("A", "AA", "AB", "Aa", "Ab", "B", "BA", "BB", "Ba", "Bb", "a", "aA", "aB", "aa", "ab", "b"))
+	tk.MustQuery(`explain select * from t where a < "b" collate utf8mb4_bin`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  lt(partitionrangecolumnscollate.t.a, "b")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	// Missing upper case B if not p5 is included!
+	tk.MustQuery(`select * from t where a < "b" collate utf8mb4_bin`).Sort().Check(testkit.Rows("A", "AA", "AB", "Aa", "Ab", "B", "BA", "BB", "Ba", "Bb", "a", "aA", "aB", "aa", "ab"))
+	tk.MustQuery(`explain select * from t where a >= "b" collate utf8mb4_bin`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  ge(partitionrangecolumnscollate.t.a, "b")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a >= "b" collate utf8mb4_bin`).Sort().Check(testkit.Rows("b", "bA", "bB", "ba", "bb", "ÄÄÄ", "ä"))
+	tk.MustQuery(`explain select * from t where a > "b" collate utf8mb4_bin`).Check(testkit.Rows(
+		`TableReader_7 8000.00 root partition:all data:Selection_6`,
+		`└─Selection_6 8000.00 cop[tikv]  gt(partitionrangecolumnscollate.t.a, "b")`,
+		`  └─TableFullScan_5 10000.00 cop[tikv] table:t keep order:false, stats:pseudo`))
+	tk.MustQuery(`select * from t where a > "b" collate utf8mb4_bin`).Sort().Check(testkit.Rows("bA", "bB", "ba", "bb", "ÄÄÄ", "ä"))
 }
 
 func TestDisableTablePartition(t *testing.T) {
@@ -2168,7 +2286,7 @@ func TestExchangePartitionExpressIndex(t *testing.T) {
 	config.UpdateGlobal(func(conf *config.Config) {
 		// Test for table lock.
 		conf.EnableTableLock = true
-		conf.Log.SlowThreshold = 10000
+		conf.Instance.SlowThreshold = 10000
 		conf.TiKVClient.AsyncCommit.SafeWindow = 0
 		conf.TiKVClient.AsyncCommit.AllowedClockDrift = 0
 		conf.Experimental.AllowsExpressionIndex = true
@@ -2739,10 +2857,6 @@ func testPartitionDropIndex(t *testing.T, store kv.Storage, lease time.Duration,
 	}
 	tk.MustExec(addIdxSQL)
 
-	indexID := external.GetIndexID(t, tk, "test", "partition_drop_idx", idxName)
-
-	jobIDExt, reset := setupJobIDExtCallback(tk.Session())
-	defer reset()
 	testutil.ExecMultiSQLInGoroutine(store, "test", []string{dropIdxSQL}, done)
 	ticker := time.NewTicker(lease / 2)
 	defer ticker.Stop()
@@ -2765,171 +2879,7 @@ LOOP:
 			num += step
 		}
 	}
-	checkDelRangeAdded(tk, jobIDExt.jobID, indexID)
 	tk.MustExec("drop table partition_drop_idx;")
-}
-
-func TestPartitionCancelAddPrimaryKey(t *testing.T) {
-	store, dom, clean := testkit.CreateMockStoreAndDomain(t)
-	defer clean()
-	idxName := "primary"
-	addIdxSQL := "alter table t1 add primary key c3_index (c1);"
-	testPartitionCancelAddIndex(t, store, dom.DDL(), 50*time.Millisecond, idxName, addIdxSQL)
-}
-
-func TestPartitionCancelAddIndex(t *testing.T) {
-	store, dom, clean := testkit.CreateMockStoreAndDomain(t)
-	defer clean()
-	idxName := "c3_index"
-	addIdxSQL := "create unique index c3_index on t1 (c1)"
-	testPartitionCancelAddIndex(t, store, dom.DDL(), 50*time.Millisecond, idxName, addIdxSQL)
-}
-
-func batchInsertT(tk *testkit.TestKit, tbl string, start, end int) {
-	dml := fmt.Sprintf("insert into %s values", tbl)
-	for i := start; i < end; i++ {
-		dml += fmt.Sprintf("(%d, %d, %d)", i, i, i)
-		if i != end-1 {
-			dml += ","
-		}
-	}
-	tk.MustExec(dml)
-}
-
-func testPartitionCancelAddIndex(t *testing.T, store kv.Storage, d ddl.DDL, lease time.Duration, idxName, addIdxSQL string) {
-	tk := testkit.NewTestKit(t, store)
-
-	tk.MustExec("use test")
-	tk.MustExec("drop table if exists t1;")
-	tk.MustExec(`create table t1 (
-		c1 int, c2 int, c3 int
-	)
-	partition by range( c1 ) (
-    	partition p0 values less than (1024),
-    	partition p1 values less than (2048),
-    	partition p2 values less than (3072),
-    	partition p3 values less than (4096),
-		partition p4 values less than (maxvalue)
-   	);`)
-	count := defaultBatchSize * 32
-	// add some rows
-	for i := 0; i < count; i += defaultBatchSize {
-		batchInsertT(tk, "t1", i, i+defaultBatchSize)
-	}
-
-	var checkErr error
-	var c3IdxInfo *model.IndexInfo
-	hook := &ddl.TestDDLCallback{}
-	originBatchSize := tk.MustQuery("select @@global.tidb_ddl_reorg_batch_size")
-	// Set batch size to lower try to slow down add-index reorganization, This if for hook to cancel this ddl job.
-	tk.MustExec("set @@global.tidb_ddl_reorg_batch_size = 32")
-	defer tk.MustExec(fmt.Sprintf("set @@global.tidb_ddl_reorg_batch_size = %v", originBatchSize.Rows()[0][0]))
-	hook.OnJobUpdatedExported, c3IdxInfo, checkErr = backgroundExecOnJobUpdatedExportedT(t, tk, store, hook, idxName)
-	originHook := d.GetHook()
-	defer d.SetHook(originHook)
-	jobIDExt := wrapJobIDExtCallback(hook)
-	d.SetHook(jobIDExt)
-	done := make(chan error, 1)
-	go backgroundExec(store, addIdxSQL, done)
-
-	times := 0
-	ticker := time.NewTicker(lease / 2)
-	defer ticker.Stop()
-LOOP:
-	for {
-		select {
-		case err := <-done:
-			require.Nil(t, checkErr)
-			require.EqualError(t, err, "[ddl:8214]Cancelled DDL job")
-			break LOOP
-		case <-ticker.C:
-			if times >= 10 {
-				break
-			}
-			step := 10
-			rand.Seed(time.Now().Unix())
-			// delete some rows, and add some data
-			for i := count; i < count+step; i++ {
-				n := rand.Intn(count)
-				tk.MustExec("delete from t1 where c1 = ?", n)
-				tk.MustExec("insert into t1 values (?, ?, ?)", i+10, i, i)
-			}
-			count += step
-			times++
-		}
-	}
-	checkDelRangeAdded(tk, jobIDExt.jobID, c3IdxInfo.ID)
-	tk.MustExec("drop table t1")
-}
-
-func backgroundExecOnJobUpdatedExportedT(t *testing.T, tk *testkit.TestKit, store kv.Storage, hook *ddl.TestDDLCallback, idxName string) (
-	func(*model.Job), *model.IndexInfo, error) {
-	var checkErr error
-	first := true
-	c3IdxInfo := &model.IndexInfo{}
-	hook.OnJobUpdatedExported = func(job *model.Job) {
-		addIndexNotFirstReorg := (job.Type == model.ActionAddIndex || job.Type == model.ActionAddPrimaryKey) &&
-			job.SchemaState == model.StateWriteReorganization && job.SnapshotVer != 0
-		// If the action is adding index and the state is writing reorganization, it want to test the case of cancelling the job when backfilling indexes.
-		// When the job satisfies this case of addIndexNotFirstReorg, the worker will start to backfill indexes.
-		if !addIndexNotFirstReorg {
-			// Get the index's meta.
-			if c3IdxInfo.ID != 0 {
-				return
-			}
-			tt := external.GetTableByName(t, tk, "test", "t1")
-			for _, index := range tt.Indices() {
-				if !tables.IsIndexWritable(index) {
-					continue
-				}
-				if index.Meta().Name.L == idxName {
-					*c3IdxInfo = *index.Meta()
-				}
-			}
-			return
-		}
-		// The job satisfies the case of addIndexNotFirst for the first time, the worker hasn't finished a batch of backfill indexes.
-		if first {
-			first = false
-			return
-		}
-		if checkErr != nil {
-			return
-		}
-		hookCtx := mock.NewContext()
-		hookCtx.Store = store
-		err := hookCtx.NewTxn(context.Background())
-		if err != nil {
-			checkErr = errors.Trace(err)
-			return
-		}
-		jobIDs := []int64{job.ID}
-		txn, err := hookCtx.Txn(true)
-		if err != nil {
-			checkErr = errors.Trace(err)
-			return
-		}
-		errs, err := admin.CancelJobs(txn, jobIDs)
-		if err != nil {
-			checkErr = errors.Trace(err)
-			return
-		}
-		// It only tests cancel one DDL job.
-		if errs[0] != nil {
-			checkErr = errors.Trace(errs[0])
-			return
-		}
-		txn, err = hookCtx.Txn(true)
-		if err != nil {
-			checkErr = errors.Trace(err)
-			return
-		}
-		err = txn.Commit(context.Background())
-		if err != nil {
-			checkErr = errors.Trace(err)
-		}
-	}
-	return hook.OnJobUpdatedExported, c3IdxInfo, checkErr
 }
 
 func TestPartitionAddPrimaryKey(t *testing.T) {
@@ -3069,17 +3019,12 @@ func TestDropSchemaWithPartitionTable(t *testing.T) {
 	jobID := row.GetInt64(0)
 
 	var tableIDs []int64
-	err = kv.RunInNewTxn(context.Background(), store, false, func(ctx context.Context, txn kv.Transaction) error {
-		tt := meta.NewMeta(txn)
-		historyJob, err := tt.GetHistoryDDLJob(jobID)
-		require.NoError(t, err)
-		err = historyJob.DecodeArgs(&tableIDs)
-		require.NoError(t, err)
-		// There is 2 partitions.
-		require.Equal(t, 3, len(tableIDs))
-		return nil
-	})
+	historyJob, err := ddl.GetHistoryJobByID(tk.Session(), jobID)
 	require.NoError(t, err)
+	err = historyJob.DecodeArgs(&tableIDs)
+	require.NoError(t, err)
+	// There is 2 partitions.
+	require.Equal(t, 3, len(tableIDs))
 
 	startTime := time.Now()
 	done := waitGCDeleteRangeDone(t, tk, tableIDs[2])
@@ -3110,7 +3055,7 @@ func getPartitionTableRecordsNum(t *testing.T, ctx sessionctx.Context, tbl table
 	for _, def := range info.Definitions {
 		pid := def.ID
 		partition := tbl.GetPartition(pid)
-		require.Nil(t, ctx.NewTxn(context.Background()))
+		require.Nil(t, sessiontxn.NewTxn(context.Background(), ctx))
 		err := tables.IterRecords(partition, ctx, partition.Cols(),
 			func(_ kv.Handle, data []types.Datum, cols []*table.Column) (bool, error) {
 				num++
@@ -3141,11 +3086,8 @@ func TestPartitionErrorCode(t *testing.T) {
 	)
 	partition by hash(store_id)
 	partitions 4;`)
-	_, err := tk.Exec("alter table employees add partition partitions 8;")
-	require.True(t, dbterror.ErrUnsupportedAddPartition.Equal(err))
-
-	_, err = tk.Exec("alter table employees add partition (partition p5 values less than (42));")
-	require.True(t, dbterror.ErrUnsupportedAddPartition.Equal(err))
+	tk.MustGetDBError("alter table employees add partition partitions 8;", dbterror.ErrUnsupportedAddPartition)
+	tk.MustGetDBError("alter table employees add partition (partition p5 values less than (42));", dbterror.ErrUnsupportedAddPartition)
 
 	// coalesce partition
 	tk.MustExec(`create table clients (
@@ -3156,16 +3098,14 @@ func TestPartitionErrorCode(t *testing.T) {
 	)
 	partition by hash( month(signed) )
 	partitions 12;`)
-	_, err = tk.Exec("alter table clients coalesce partition 4;")
-	require.True(t, dbterror.ErrUnsupportedCoalescePartition.Equal(err))
+	tk.MustGetDBError("alter table clients coalesce partition 4;", dbterror.ErrUnsupportedCoalescePartition)
 
 	tk.MustExec(`create table t_part (a int key)
 		partition by range(a) (
 		partition p0 values less than (10),
 		partition p1 values less than (20)
 		);`)
-	_, err = tk.Exec("alter table t_part coalesce partition 4;")
-	require.True(t, dbterror.ErrCoalesceOnlyOnHashPartition.Equal(err))
+	tk.MustGetDBError("alter table t_part coalesce partition 4;", dbterror.ErrCoalesceOnlyOnHashPartition)
 
 	tk.MustGetErrCode(`alter table t_part reorganize partition p0, p1 into (
 			partition p0 values less than (1980));`, tmysql.ErrUnsupportedDDLOperation)
@@ -3188,9 +3128,7 @@ func TestPartitionErrorCode(t *testing.T) {
 	tk2 := testkit.NewTestKit(t, store)
 	tk2.MustExec("use test")
 	tk2.MustExec("alter table t truncate partition p0;")
-
-	_, err = tk1.Exec("commit")
-	require.NoError(t, err)
+	tk1.MustExec("commit")
 }
 
 func TestConstAndTimezoneDepent(t *testing.T) {
@@ -3340,7 +3278,7 @@ func TestCommitWhenSchemaChange(t *testing.T) {
 	config.UpdateGlobal(func(conf *config.Config) {
 		// Test for table lock.
 		conf.EnableTableLock = true
-		conf.Log.SlowThreshold = 10000
+		conf.Instance.SlowThreshold = 10000
 		conf.Experimental.AllowsExpressionIndex = true
 	})
 	store, clean := testkit.CreateMockStoreWithSchemaLease(t, time.Second)
@@ -3390,8 +3328,7 @@ func TestCommitWhenSchemaChange(t *testing.T) {
 	tk.MustExec("insert into nt values (1), (3), (5);")
 	tk2.MustExec("alter table pt exchange partition p1 with table nt;")
 	tk.MustExec("insert into nt values (7), (9);")
-	_, err = tk.Session().Execute(context.Background(), "commit")
-	require.True(t, domain.ErrInfoSchemaChanged.Equal(err))
+	tk.MustGetDBError("commit", domain.ErrInfoSchemaChanged)
 
 	tk.MustExec("admin check table pt")
 	tk.MustQuery("select * from pt").Check(testkit.Rows())
@@ -3402,8 +3339,7 @@ func TestCommitWhenSchemaChange(t *testing.T) {
 	tk.MustExec("insert into pt values (1), (3), (5);")
 	tk2.MustExec("alter table pt exchange partition p1 with table nt;")
 	tk.MustExec("insert into pt values (7), (9);")
-	_, err = tk.Session().Execute(context.Background(), "commit")
-	require.True(t, domain.ErrInfoSchemaChanged.Equal(err))
+	tk.MustGetDBError("commit", domain.ErrInfoSchemaChanged)
 
 	tk.MustExec("admin check table pt")
 	tk.MustQuery("select * from pt").Check(testkit.Rows())
@@ -3418,34 +3354,28 @@ func TestCreatePartitionTableWithWrongType(t *testing.T) {
 	tk.MustExec("use test")
 	tk.MustExec("drop table if exists t")
 	var err error
-	_, err = tk.Exec(`create table t(
+	tk.MustGetDBError(`create table t(
 	b int(10)
 	) partition by range columns (b) (
 		partition p0 values less than (0x10),
 		partition p3 values less than (0x20)
-	)`)
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
+	)`, dbterror.ErrWrongTypeColumnValue)
 
-	_, err = tk.Exec(`create table t(
+	tk.MustGetDBError(`create table t(
 	b int(10)
 	) partition by range columns (b) (
 		partition p0 values less than ('g'),
 		partition p3 values less than ('k')
-	)`)
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
+	)`, dbterror.ErrWrongTypeColumnValue)
 
-	_, err = tk.Exec(`create table t(
+	tk.MustGetDBError(`create table t(
 	b char(10)
 	) partition by range columns (b) (
 		partition p0 values less than (30),
 		partition p3 values less than (60)
-	)`)
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
+	)`, dbterror.ErrWrongTypeColumnValue)
 
-	_, err = tk.Exec(`create table t(
+	err = tk.ExecToErr(`create table t(
 	b datetime
 	) partition by range columns (b) (
 		partition p0 values less than ('g'),
@@ -3475,35 +3405,13 @@ func TestAddPartitionForTableWithWrongType(t *testing.T) {
 		partition p0 values less than ('2020-09-01')
 	)`)
 
-	var err error
-
-	_, err = tk.Exec("alter table t_int add partition (partition p1 values less than ('g'))")
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
-
-	_, err = tk.Exec("alter table t_int add partition (partition p1 values less than (0x20))")
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
-
-	_, err = tk.Exec("alter table t_char add partition (partition p1 values less than (0x20))")
-	require.Error(t, err)
-	require.True(t, dbterror.ErrRangeNotIncreasing.Equal(err))
-
-	_, err = tk.Exec("alter table t_char add partition (partition p1 values less than (10))")
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
-
-	_, err = tk.Exec("alter table t_date add partition (partition p1 values less than ('m'))")
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
-
-	_, err = tk.Exec("alter table t_date add partition (partition p1 values less than (0x20))")
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
-
-	_, err = tk.Exec("alter table t_date add partition (partition p1 values less than (20))")
-	require.Error(t, err)
-	require.True(t, dbterror.ErrWrongTypeColumnValue.Equal(err))
+	tk.MustGetDBError("alter table t_int add partition (partition p1 values less than ('g'))", dbterror.ErrWrongTypeColumnValue)
+	tk.MustGetDBError("alter table t_int add partition (partition p1 values less than (0x20))", dbterror.ErrWrongTypeColumnValue)
+	tk.MustGetDBError("alter table t_char add partition (partition p1 values less than (0x20))", dbterror.ErrRangeNotIncreasing)
+	tk.MustGetDBError("alter table t_char add partition (partition p1 values less than (10))", dbterror.ErrWrongTypeColumnValue)
+	tk.MustGetDBError("alter table t_date add partition (partition p1 values less than ('m'))", dbterror.ErrWrongTypeColumnValue)
+	tk.MustGetDBError("alter table t_date add partition (partition p1 values less than (0x20))", dbterror.ErrWrongTypeColumnValue)
+	tk.MustGetDBError("alter table t_date add partition (partition p1 values less than (20))", dbterror.ErrWrongTypeColumnValue)
 }
 
 func TestPartitionListWithTimeType(t *testing.T) {
@@ -3570,8 +3478,7 @@ func TestAddTableWithPartition(t *testing.T) {
 	tk.MustGetErrCode("create temporary table local_partition_table (a int, b int) partition by hash(a) partitions 3;", errno.ErrPartitionNoTemporary)
 	tk.MustExec("drop table if exists local_partition_table;")
 	tk.MustExec("drop table if exists partition_table;")
-	_, err = tk.Exec("create table partition_table (a int, b int) partition by hash(a) partitions 3;")
-	require.NoError(t, err)
+	tk.MustExec("create table partition_table (a int, b int) partition by hash(a) partitions 3;")
 	tk.MustExec("drop table if exists partition_table;")
 	tk.MustExec("drop table if exists local_partition_range_table;")
 	tk.MustGetErrCode(`create temporary table local_partition_range_table (c1 smallint(6) not null, c2 char(5) default null) partition by range ( c1 ) (
