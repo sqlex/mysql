@@ -346,12 +346,12 @@ func (d *DatabaseAPI) GetPlanInfo(sessionID int64, sql string) (*PlanInfo, error
 			col := plan.Schema().Columns[index]
 			fields[index] = &Field{
 				Name:     name.ColName.O,
-				DBType:   types.TypeToStr(col.RetType.Tp, col.RetType.Charset),
-				Length:   col.RetType.Flen,
-				Unsigned: mysql.HasUnsignedFlag(col.RetType.Flag),
-				Binary:   mysql.HasBinaryFlag(col.RetType.Flag),
-				Decimal:  col.RetType.Decimal,
-				Elements: col.RetType.Elems,
+				DBType:   types.TypeToStr(col.RetType.GetType(), col.RetType.GetCharset()),
+				Length:   col.RetType.GetFlen(),
+				Unsigned: mysql.HasUnsignedFlag(col.RetType.GetFlag()),
+				Binary:   mysql.HasBinaryFlag(col.RetType.GetFlag()),
+				Decimal:  col.RetType.GetDecimal(),
+				Elements: col.RetType.GetElems(),
 			}
 		}
 		planInfo := &PlanInfo{Fields: fields}
