@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tidb/domain"
 	"github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/session"
+	"github.com/pingcap/tidb/util/hint"
 	"strings"
 	"sync"
 )
@@ -13,7 +15,7 @@ import (
 type Session struct {
 	session.Session
 	sessionLock sync.Mutex
-	planBuilder *core.PlanBuilder
+	domain      *domain.Domain
 }
 
 func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
@@ -26,7 +28,13 @@ func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
 	if len(stmts) <= 0 {
 		return nil, errors.New("不存在合法的SQL语句")
 	}
-	plan, err := s.planBuilder.Build(ctx, stmts[0])
+	stmt := stmts[0]
+	err = core.Preprocess(s, stmt, core.InPrepare)
+	if err != nil {
+		return nil, errors.Wrap(err, "SQL语句处理失败")
+	}
+	builder, _ := core.NewPlanBuilder().Init(s, s.domain.InfoSchema(), &hint.BlockHintProcessor{})
+	plan, err := builder.Build(ctx, stmt)
 	if err != nil {
 		return nil, errors.Wrap(err, "无法创建逻辑计划")
 	}
