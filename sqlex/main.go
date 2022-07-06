@@ -296,7 +296,7 @@ func (d *DatabaseAPI) GetAllTable(sessionID int64) ([]string, error) {
 	if session, exist := d.sessions[sessionID]; exist {
 		d.sessionsLock.Unlock()
 
-		return session.GetAllTables(context.Background())
+		return session.GetAllTables()
 	} else {
 		d.sessionsLock.Unlock()
 		return nil, errors.New("Session不存在")
@@ -312,6 +312,54 @@ type Field struct {
 	Binary   bool     `json:"binary"`
 	Decimal  int      `json:"decimal"`
 	Elements []string `json:"elements"`
+
+	PrimaryKey    bool `json:"isPrimaryKey"`
+	MultipleKey   bool `json:"isMultipleKey"`
+	AutoIncrement bool `json:"isAutoIncrement"`
+	Unique        bool `json:"isUnique"`
+	NotNull       bool `json:"notNull"`
+	Default       bool `json:"hasDefaultVale"`
+}
+
+func newField(name string, fieldType *types.FieldType) *Field {
+	return &Field{
+		Name:     name,
+		DBType:   types.TypeToStr(fieldType.GetType(), fieldType.GetCharset()),
+		Length:   fieldType.GetFlen(),
+		Unsigned: mysql.HasUnsignedFlag(fieldType.GetFlag()),
+		Binary:   mysql.HasBinaryFlag(fieldType.GetFlag()),
+		Decimal:  fieldType.GetDecimal(),
+		Elements: fieldType.GetElems(),
+
+		PrimaryKey:    mysql.HasPriKeyFlag(fieldType.GetFlag()),
+		MultipleKey:   mysql.HasMultipleKeyFlag(fieldType.GetFlag()),
+		AutoIncrement: mysql.HasAutoIncrementFlag(fieldType.GetFlag()),
+		Unique:        mysql.HasUniKeyFlag(fieldType.GetFlag()),
+		NotNull:       mysql.HasNotNullFlag(fieldType.GetFlag()),
+		Default:       !mysql.HasNoDefaultValueFlag(fieldType.GetFlag()),
+	}
+}
+
+func (d *DatabaseAPI) GetColumns(sessionID int64, table string) ([]*Field, error) {
+	d.sessionsLock.Lock()
+	if session, exist := d.sessions[sessionID]; exist {
+		d.sessionsLock.Unlock()
+		//获取表信息
+		tableInfo, err := session.GetTableInfo(table)
+		if err != nil {
+			return nil, err
+		}
+		//获取列信息
+		columns := tableInfo.Columns
+		fields := make([]*Field, len(columns))
+		for index, col := range columns {
+			fields[index] = newField(col.Name.String(), &col.FieldType)
+		}
+		return fields, nil
+	} else {
+		d.sessionsLock.Unlock()
+		return nil, errors.New("Session不存在")
+	}
 }
 
 // PlanInfo 计划信息
@@ -344,15 +392,7 @@ func (d *DatabaseAPI) GetPlanInfo(sessionID int64, sql string) (*PlanInfo, error
 		fields := make([]*Field, len(plan.OutputNames()))
 		for index, name := range plan.OutputNames() {
 			col := plan.Schema().Columns[index]
-			fields[index] = &Field{
-				Name:     name.ColName.O,
-				DBType:   types.TypeToStr(col.RetType.GetType(), col.RetType.GetCharset()),
-				Length:   col.RetType.GetFlen(),
-				Unsigned: mysql.HasUnsignedFlag(col.RetType.GetFlag()),
-				Binary:   mysql.HasBinaryFlag(col.RetType.GetFlag()),
-				Decimal:  col.RetType.GetDecimal(),
-				Elements: col.RetType.GetElems(),
-			}
+			fields[index] = newField(name.ColName.String(), col.RetType)
 		}
 		planInfo := &PlanInfo{Fields: fields}
 		//构建索引信息

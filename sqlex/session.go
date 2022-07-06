@@ -5,17 +5,35 @@ import (
 	"fmt"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/domain"
+	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/session"
+	"github.com/pingcap/tidb/sessiontxn"
 	"github.com/pingcap/tidb/util/hint"
+	"golang.org/x/exp/slices"
 	"strings"
 	"sync"
 )
 
 type Session struct {
 	session.Session
+	dbName      string
 	sessionLock sync.Mutex
 	domain      *domain.Domain
+}
+
+func (s *Session) getDBInfo() (*model.DBInfo, error) {
+	var dbInfo *model.DBInfo
+	dbInfos := sessiontxn.GetTxnManager(s).GetTxnInfoSchema().AllSchemas()
+	for _, current := range dbInfos {
+		if current.Name.String() == s.dbName {
+			dbInfo = current
+		}
+	}
+	if dbInfo == nil {
+		return nil, errors.Errorf("找不到数据库 %s", s.dbName)
+	}
+	return dbInfo, nil
 }
 
 func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
@@ -41,26 +59,41 @@ func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
 	return plan, nil
 }
 
-func (s *Session) GetAllTables(ctx context.Context) ([]string, error) {
+func (s *Session) GetAllTables() ([]string, error) {
 	s.sessionLock.Lock()
 	defer s.sessionLock.Unlock()
-	results, err := s.Execute(ctx, "show tables")
+
+	dbInfo, err := s.getDBInfo()
 	if err != nil {
-		return nil, errors.Wrap(err, "无法执行遍历表SQL")
-	}
-	if len(results) <= 0 {
-		return nil, errors.Wrap(err, "无结果集")
-	}
-	result := results[0]
-	rows, err := session.ResultSetToStringSlice(ctx, s, result)
-	if err != nil {
-		return nil, errors.Wrap(err, "结果集转换失败")
+		return nil, err
 	}
 	tables := make([]string, 0)
-	for _, row := range rows {
-		tables = append(tables, row[0])
+	for _, table := range dbInfo.Tables {
+		tables = append(tables, table.Name.String())
 	}
+	slices.Sort(tables)
 	return tables, nil
+}
+
+func (s *Session) GetTableInfo(table string) (*model.TableInfo, error) {
+	s.sessionLock.Lock()
+	defer s.sessionLock.Unlock()
+
+	dbInfo, err := s.getDBInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	var tableInfo *model.TableInfo
+	for _, current := range dbInfo.Tables {
+		if current.Name.String() == table {
+			tableInfo = current
+		}
+	}
+	if tableInfo == nil {
+		return nil, errors.Errorf("找不到表 %s", table)
+	}
+	return tableInfo, nil
 }
 
 func (s *Session) GetTableDDL(ctx context.Context, tableName string) (string, error) {
@@ -85,7 +118,7 @@ func (s *Session) GetTableDDL(ctx context.Context, tableName string) (string, er
 }
 
 func (s *Session) GetDDL(ctx context.Context) (string, error) {
-	tableNames, err := s.GetAllTables(ctx)
+	tableNames, err := s.GetAllTables()
 	if err != nil {
 		return "", err
 	}

@@ -6,10 +6,8 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/domain"
 	"github.com/pingcap/tidb/kv"
-	"github.com/pingcap/tidb/planner/core"
 	"github.com/pingcap/tidb/session"
 	"github.com/pingcap/tidb/store/mockstore"
-	"github.com/pingcap/tidb/util/hint"
 )
 
 type Database struct {
@@ -44,26 +42,16 @@ func (d *Database) Close() error {
 	return d.store.Close()
 }
 
-func (d *Database) CreateSession() (s *Session, err error) {
+func (d *Database) CreateSessionOnDatabase(ctx context.Context, database string) (s *Session, err error) {
 	//创建session
 	se, err := session.CreateSessionWithDomain(d.store, d.domain)
 	if err != nil {
 		return nil, err
 	}
-	//创建计划构建器
-	builder := core.NewPlanBuilder()
-	//初始化builder
-	builder, _ = builder.Init(se, d.domain.InfoSchema(), &hint.BlockHintProcessor{})
-	return &Session{
+	s = &Session{
 		Session: se,
+		dbName:  database,
 		domain:  d.domain,
-	}, nil
-}
-
-func (d *Database) CreateSessionOnDatabase(ctx context.Context, database string) (s *Session, err error) {
-	s, err = d.CreateSession()
-	if err != nil {
-		return nil, err
 	}
 	_, err = s.Execute(ctx, fmt.Sprintf("create database if not exists %s", database))
 	if err != nil {

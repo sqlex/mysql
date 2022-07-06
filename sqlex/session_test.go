@@ -14,15 +14,11 @@ func generateTestData(ctx context.Context, t *testing.T) *Database {
 	a.NoError(err)
 
 	//定义数据
-	session, err := database.CreateSession()
+	session, err := database.CreateSessionOnDatabase(context.Background(), "sqlex")
 	a.NoError(err)
 	defer session.Close()
 
 	err = session.ExecuteScript(ctx, `
-			create database sqlex;
-
-			use sqlex;
-
 			create table person(
 		    	id integer auto_increment primary key,
 		    	name varchar(255) not null,
@@ -61,7 +57,7 @@ func TestSession_GetAllTables(t *testing.T) {
 	session, err := database.CreateSessionOnDatabase(context.Background(), "sqlex")
 	a.NoError(err)
 	//获取所有的表
-	tables, err := session.GetAllTables(context.Background())
+	tables, err := session.GetAllTables()
 	a.NoError(err)
 
 	a.Equal([]string{"department", "person"}, tables)
@@ -75,7 +71,7 @@ func TestSession_GetTableDDL(t *testing.T) {
 	session, err := database.CreateSessionOnDatabase(context.Background(), "sqlex")
 	a.NoError(err)
 
-	tables, err := session.GetAllTables(context.Background())
+	tables, err := session.GetAllTables()
 	a.NoError(err)
 
 	for _, table := range tables {
