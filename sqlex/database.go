@@ -55,8 +55,8 @@ func (d *Database) CreateSession() (s *Session, err error) {
 	//初始化builder
 	builder, _ = builder.Init(se, d.domain.InfoSchema(), &hint.BlockHintProcessor{})
 	return &Session{
-		Session:     se,
-		planBuilder: builder,
+		Session: se,
+		domain:  d.domain,
 	}, nil
 }
 

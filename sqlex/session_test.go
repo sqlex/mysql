@@ -85,3 +85,30 @@ func TestSession_GetTableDDL(t *testing.T) {
 		fmt.Println(ddl)
 	}
 }
+
+func TestSession_GetPlan(t *testing.T) {
+	a := assert.New(t)
+
+	database := generateTestData(context.Background(), t)
+
+	session, err := database.CreateSessionOnDatabase(context.Background(), "sqlex")
+	a.NoError(err)
+
+	_, err = session.GetPlan(context.Background(), "select * from person")
+	a.NoError(err)
+
+	_, err = session.GetPlan(context.Background(), "select * from person where id=?")
+	a.NoError(err)
+
+	_, err = session.GetPlan(context.Background(), "insert into person values(?,?,?)")
+	a.NoError(err)
+
+	_, err = session.GetPlan(context.Background(), "insert into person values(?,?)")
+	a.Error(err)
+
+	_, err = session.GetPlan(context.Background(), "delete from person where id=?")
+	a.NoError(err)
+
+	_, err = session.GetPlan(context.Background(), "update person set name=? where id=?")
+	a.NoError(err)
+}
