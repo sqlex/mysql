@@ -388,20 +388,27 @@ func (d *DatabaseAPI) GetPlanInfo(sessionID int64, sql string) (*PlanInfo, error
 		if err != nil {
 			return nil, err
 		}
-		//获取字段
-		fields := make([]*Field, len(plan.OutputNames()))
-		for index, name := range plan.OutputNames() {
-			col := plan.Schema().Columns[index]
-			fields[index] = newField(name.ColName.String(), col.RetType)
-		}
-		planInfo := &PlanInfo{Fields: fields}
-		//构建索引信息
-		if logicalPlan, ok := plan.(core.LogicalPlan); ok {
-			buildKeyInfo(logicalPlan)
-			planInfo.MaxOneRow = logicalPlan.MaxOneRow()
+		//获取字段信息
+		fields := make([]*Field, 0)
+		isMaxOneRow := false
+		//如果计划是一个有输出的,比如查询
+		if plan.Schema() != nil && len(plan.Schema().Columns) == len(plan.OutputNames()) {
+			fields = make([]*Field, len(plan.OutputNames()))
+			for index, name := range plan.OutputNames() {
+				col := plan.Schema().Columns[index]
+				fields[index] = newField(name.ColName.String(), col.RetType)
+			}
+			//构建索引信息
+			if logicalPlan, ok := plan.(core.LogicalPlan); ok {
+				buildKeyInfo(logicalPlan)
+				isMaxOneRow = logicalPlan.MaxOneRow()
+			}
 		}
 		//返回
-		return planInfo, nil
+		return &PlanInfo{
+			Fields:    fields,
+			MaxOneRow: isMaxOneRow,
+		}, nil
 	} else {
 		d.sessionsLock.Unlock()
 		return nil, errors.New("Session不存在")
