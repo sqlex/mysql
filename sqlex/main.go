@@ -318,7 +318,7 @@ type Field struct {
 	AutoIncrement bool `json:"isAutoIncrement"`
 	Unique        bool `json:"isUnique"`
 	NotNull       bool `json:"notNull"`
-	Default       bool `json:"hasDefaultVale"`
+	Default       bool `json:"hasDefaultValue"`
 }
 
 func newField(name string, fieldType *types.FieldType) *Field {
