@@ -14,6 +14,7 @@ import (
 	"github.com/pingcap/tidb/planner/core"
 	types2 "github.com/pingcap/tidb/types"
 	driver "github.com/pingcap/tidb/types/parser_driver"
+	"golang.org/x/exp/slices"
 	"math/rand"
 	"sync"
 	"unicode/utf8"
@@ -340,7 +341,23 @@ func newField(name string, fieldType *types.FieldType) *Field {
 	}
 }
 
-func (d *DatabaseAPI) GetColumns(sessionID int64, table string) ([]*Field, error) {
+type TableInfo struct {
+	Name       string     `json:"name"`
+	PrimaryKey []string   `json:"primaryKey"`
+	Uniques    [][]string `json:"uniques"`
+	Columns    []*Field   `json:"columns"`
+}
+
+func isContains(list [][]string, value []string) bool {
+	for _, current := range list {
+		if slices.Equal(current, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *DatabaseAPI) GetTableInfo(sessionID int64, table string) (*TableInfo, error) {
 	d.sessionsLock.Lock()
 	if session, exist := d.sessions[sessionID]; exist {
 		d.sessionsLock.Unlock()
@@ -355,7 +372,46 @@ func (d *DatabaseAPI) GetColumns(sessionID int64, table string) ([]*Field, error
 		for index, col := range columns {
 			fields[index] = newField(col.Name.String(), &col.FieldType)
 		}
-		return fields, nil
+		//获取唯一索引信息
+		uniques := make([][]string, 0)
+		if tableInfo.Indices != nil {
+			for _, index := range tableInfo.Indices {
+				//唯一索引,但是不是主键索引
+				if index.Unique {
+					columnNames := make([]string, len(index.Columns))
+					for i, column := range index.Columns {
+						columnNames[i] = column.Name.String()
+					}
+					slices.Sort(columnNames)
+					//判断是否已经存在了
+					if !isContains(uniques, columnNames) {
+						uniques = append(uniques, columnNames)
+					}
+				}
+			}
+		}
+		//获取主键信息
+		primaryKey := make([]string, 0)
+		for _, field := range fields {
+			if field.PrimaryKey {
+				primaryKey = append(primaryKey, field.Name)
+			}
+		}
+		if len(primaryKey) > 0 {
+			slices.Sort(primaryKey)
+			if !isContains(uniques, primaryKey) {
+				uniques = append(uniques, primaryKey)
+			}
+		}
+		if len(primaryKey) == 0 {
+			primaryKey = nil
+		}
+		return &TableInfo{
+			Name:       table,
+			PrimaryKey: primaryKey,
+			Uniques:    uniques,
+			Columns:    fields,
+		}, nil
 	} else {
 		d.sessionsLock.Unlock()
 		return nil, errors.New("Session不存在")
