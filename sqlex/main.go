@@ -420,8 +420,9 @@ func (d *DatabaseAPI) GetTableInfo(sessionID int64, table string) (*TableInfo, e
 
 // PlanInfo 计划信息
 type PlanInfo struct {
-	Fields    []*Field `json:"fields"`
-	MaxOneRow bool     `json:"maxOneRow"`
+	Fields      []*Field `json:"fields"`
+	MaxOneRow   bool     `json:"maxOneRow"`
+	InsertTable *string  `json:"insertTable"`
 }
 
 func buildKeyInfo(lp core.LogicalPlan) {
@@ -460,10 +461,17 @@ func (d *DatabaseAPI) GetPlanInfo(sessionID int64, sql string) (*PlanInfo, error
 				isMaxOneRow = logicalPlan.MaxOneRow()
 			}
 		}
+		//如果是insert集合,则获取它插入的表
+		var insertTable *string = nil
+		if insertPlan, ok := plan.(*core.Insert); ok {
+			tableName := insertPlan.Table.Meta().Name.String()
+			insertTable = &tableName
+		}
 		//返回
 		return &PlanInfo{
-			Fields:    fields,
-			MaxOneRow: isMaxOneRow,
+			Fields:      fields,
+			MaxOneRow:   isMaxOneRow,
+			InsertTable: insertTable,
 		}, nil
 	} else {
 		d.sessionsLock.Unlock()
