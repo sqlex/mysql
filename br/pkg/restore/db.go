@@ -12,10 +12,12 @@ import (
 	"github.com/pingcap/tidb/br/pkg/glue"
 	"github.com/pingcap/tidb/br/pkg/metautil"
 	"github.com/pingcap/tidb/br/pkg/utils"
+	"github.com/pingcap/tidb/domain"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/sessionctx/variable"
+	tidbutil "github.com/pingcap/tidb/util"
 	"go.uber.org/zap"
 	"golang.org/x/exp/slices"
 )
@@ -169,7 +171,6 @@ func (db *DB) CreateDatabase(ctx context.Context, schema *model.DBInfo) error {
 	return errors.Trace(err)
 }
 
-//
 func (db *DB) restoreSequence(ctx context.Context, table *metautil.Table) error {
 	var restoreMetaSQL string
 	var err error
@@ -228,7 +229,6 @@ func (db *DB) restoreSequence(ctx context.Context, table *metautil.Table) error 
 }
 
 func (db *DB) CreateTablePostRestore(ctx context.Context, table *metautil.Table, toBeCorrectedTables map[UniqueTableName]bool) error {
-
 	var restoreMetaSQL string
 	var err error
 	switch {
@@ -448,6 +448,26 @@ func FilterDDLJobByRules(srcDDLJobs []*model.Job, rules ...DDLJobFilterRule) (ds
 // DDLJobBlockListRule rule for filter ddl job with type in block list.
 func DDLJobBlockListRule(ddlJob *model.Job) bool {
 	return checkIsInActions(ddlJob.Type, incrementalRestoreActionBlockList)
+}
+
+// GetExistedUserDBs get dbs created or modified by users
+func GetExistedUserDBs(dom *domain.Domain) []*model.DBInfo {
+	databases := dom.InfoSchema().AllSchemas()
+	existedDatabases := make([]*model.DBInfo, 0, 16)
+	for _, db := range databases {
+		dbName := db.Name.L
+		if tidbutil.IsMemOrSysDB(dbName) {
+			continue
+		} else if dbName == "test" && len(db.Tables) == 0 {
+			// tidb create test db on fresh cluster
+			// if it's empty we don't take it as user db
+			continue
+		} else {
+			existedDatabases = append(existedDatabases, db)
+		}
+	}
+
+	return existedDatabases
 }
 
 func getDatabases(tables []*metautil.Table) (dbs []*model.DBInfo) {
