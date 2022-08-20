@@ -47,6 +47,13 @@ func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
 		return nil, errors.New("不存在合法的SQL语句")
 	}
 	stmt := stmts[0]
+	//准备事务上下文
+	err = s.Session.PrepareTxnCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	//在方法结束时回滚
+	defer s.Session.RollbackTxn(ctx)
 	err = core.Preprocess(s, stmt, core.InPrepare)
 	if err != nil {
 		return nil, errors.Wrap(err, "SQL语句处理失败")
