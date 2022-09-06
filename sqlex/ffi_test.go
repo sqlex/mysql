@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"github.com/stretchr/testify/assert"
 	"testing"
@@ -47,7 +48,7 @@ func TestFFIContainer(t *testing.T) {
 	})
 	a.Equal(true, resp.Success)
 	a.Equal("", resp.Message)
-	a.Equal(`"sqlex"`, resp.ReturnValue)
+	a.Equal("sqlex", resp.ReturnValue)
 
 	resp = ffi.Invoke(&Request{
 		ModuleName: "Test",
@@ -55,7 +56,7 @@ func TestFFIContainer(t *testing.T) {
 	})
 	a.Equal(false, resp.Success)
 	a.Equal("error", resp.Message)
-	a.Equal("", resp.ReturnValue)
+	a.Equal(nil, resp.ReturnValue)
 
 	resp = ffi.Invoke(&Request{
 		ModuleName: "Test",
@@ -63,14 +64,14 @@ func TestFFIContainer(t *testing.T) {
 	})
 	a.Equal(true, resp.Success)
 	a.Equal("", resp.Message)
-	a.Equal("null", resp.ReturnValue)
+	a.Equal(nil, resp.ReturnValue)
 
 	resp = ffi.Invoke(&Request{
 		ModuleName: "Test",
 		MethodName: "GetHello",
-		Params:     []string{`"你好"`},
+		Parameters: []json.RawMessage{[]byte(`"你好"`)},
 	})
 	a.Equal(true, resp.Success)
 	a.Equal("", resp.Message)
-	a.Equal(`"你好sqlex"`, resp.ReturnValue)
+	a.Equal("你好sqlex", resp.ReturnValue)
 }

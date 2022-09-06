@@ -8,15 +8,15 @@ import (
 )
 
 type Request struct {
-	ModuleName string   `json:"moduleName"`
-	MethodName string   `json:"methodName"`
-	Params     []string `json:"params"`
+	ModuleName string            `json:"moduleName"`
+	MethodName string            `json:"methodName"`
+	Parameters []json.RawMessage `json:"parameters"`
 }
 
 type Response struct {
-	Success     bool   `json:"success"`
-	Message     string `json:"message"`
-	ReturnValue string `json:"returnValue"`
+	Success     bool        `json:"success"`
+	Message     string      `json:"message"`
+	ReturnValue interface{} `json:"returnValue"`
 }
 
 type FFIContainer struct {
@@ -105,14 +105,14 @@ func (f *FFIContainer) Invoke(req *Request) (resp *Response) {
 
 			//判断参数个数不要错误
 			paramIndex := index - 1
-			if paramIndex >= len(req.Params) {
-				return nil, errors.Errorf("错误的参数个数,需要 %d 个,只提供了 %d 个", t.NumIn()-1, len(req.Params))
+			if paramIndex >= len(req.Parameters) {
+				return nil, errors.Errorf("错误的参数个数,需要 %d 个,只提供了 %d 个", t.NumIn()-1, len(req.Parameters))
 			}
 
 			//拿到参数对应的二进制数据
-			paramJson := req.Params[paramIndex]
+			paramJson := req.Parameters[paramIndex]
 			//然后反射出对应的数据
-			err := json.Unmarshal([]byte(paramJson), paramValue.Interface())
+			err := json.Unmarshal(paramJson, paramValue.Interface())
 			if err != nil {
 				return nil, errors.Errorf("无法反序列化第 %d 个参数", paramIndex)
 			}
@@ -155,14 +155,9 @@ func (f *FFIContainer) Invoke(req *Request) (resp *Response) {
 		resp.Message = err.Error()
 		return resp
 	}
-	jsonData, err := json.Marshal(returnValue)
-	if err != nil {
-		resp.Success = false
-		resp.Message = fmt.Sprintf("序列化返回值错误: %s", err.Error())
-		return resp
-	}
+	//成功
 	resp.Success = true
-	resp.ReturnValue = string(jsonData)
+	resp.ReturnValue = returnValue
 	return resp
 }
 
@@ -183,7 +178,7 @@ func (f *FFIContainer) InvokeByData(reqData string) (respData string) {
 	return string(respJson)
 }
 
-//判断是否为Error
+// 判断是否为Error
 func isError(t reflect.Type) bool {
 	//Error方法存不存在
 	if m, exist := t.MethodByName("Error"); exist {
