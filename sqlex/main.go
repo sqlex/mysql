@@ -12,8 +12,6 @@ import (
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/parser/types"
 	"github.com/pingcap/tidb/planner/core"
-	types2 "github.com/pingcap/tidb/types"
-	driver "github.com/pingcap/tidb/types/parser_driver"
 	"golang.org/x/exp/slices"
 	"math/rand"
 	"sync"
@@ -183,8 +181,6 @@ type StatementInfo struct {
 	Type                StatementType        `json:"type"`
 	InExprPositions     []InExprPosition     `json:"inExprPositions"`
 	IsNullExprPositions []IsNullExprPosition `json:"isNullExprPositions"`
-	HasLimit            bool                 `json:"hasLimit"`
-	LimitRows           uint64               `json:"limitRows"`
 }
 
 func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
@@ -200,17 +196,12 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 		Type: OtherStatementType,
 	}
 
-	//顶级limit节点
-	var topLevelLimitNode *ast.Limit
-
 	//获取语句类型
-	switch stmt := stmt.(type) {
+	switch stmt.(type) {
 	case *ast.SelectStmt:
 		info.Type = SelectStatementType
-		topLevelLimitNode = stmt.Limit
 	case *ast.SetOprStmt:
 		info.Type = SelectStatementType
-		topLevelLimitNode = stmt.Limit
 	case *ast.InsertStmt:
 		info.Type = InsertStatementType
 	case *ast.UpdateStmt:
@@ -219,18 +210,6 @@ func (d *DatabaseAPI) GetStatementInfo(sql string) (*StatementInfo, error) {
 		info.Type = DeleteStatementType
 	default:
 		info.Type = OtherStatementType
-	}
-
-	//判断顶级limit节点是否有常量值
-	if topLevelLimitNode != nil {
-		if topLevelLimitNode.Count != nil {
-			if countNode, ok := topLevelLimitNode.Count.(*driver.ValueExpr); ok {
-				if countNode.Kind() == types2.KindUint64 {
-					info.HasLimit = true
-					info.LimitRows = countNode.GetUint64()
-				}
-			}
-		}
 	}
 
 	//遍历/获取所有的 in (?) 表达式
