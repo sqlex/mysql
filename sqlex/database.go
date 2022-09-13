@@ -17,7 +17,7 @@ type Database struct {
 
 func NewDatabase(dataPath string) (*Database, error) {
 	//创建存储
-	store, err := mockstore.NewMockStore(mockstore.WithPath(dataPath))
+	store, err := mockstore.NewMockStore(mockstore.WithStoreType(mockstore.MockTiKV), mockstore.WithPath(dataPath))
 	if err != nil {
 		return nil, errors.Wrap(err, "无法初始化存储")
 	}
