@@ -1,8 +1,11 @@
 package main
 
-import "github.com/pingcap/tidb/util/logutil"
+import (
+	"github.com/pingcap/tidb/config"
+	"github.com/pingcap/tidb/util/logutil"
+)
 
-//ffi 容器
+// ffi 容器
 var container *FFIContainer
 
 func init() {
@@ -12,6 +15,14 @@ func init() {
 	if err != nil {
 		panic("无法初始化Log系统")
 	}
+	config.UpdateGlobal(func(conf *config.Config) {
+		conf.EnableTelemetry = false
+		conf.Performance.RunAutoAnalyze = false
+		conf.Instance.EnableSlowLog.Store(false)
+		conf.Instance.RecordPlanInSlowLog = 0
+		conf.Security.SkipGrantTable = true
+		conf.Binlog.Enable = false
+	})
 
 	//初始化ffi容器
 	container = NewFFIContainer()
