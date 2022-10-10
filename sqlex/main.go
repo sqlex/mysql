@@ -14,6 +14,7 @@ import (
 	"github.com/pingcap/tidb/planner/core"
 	"golang.org/x/exp/slices"
 	"math/rand"
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -162,7 +163,7 @@ func (v *isNullExprNodeVisitor) Leave(n ast.Node) (node ast.Node, ok bool) {
 			if paramMarkerExpr, ok := isNullExprNode.Expr.(ast.ParamMarkerExpr); ok {
 				//一路查找,直到找到 "null"
 				for index := paramMarkerExpr.OriginTextPosition(); index+3 < len(v.sql); index++ {
-					if v.sql[index:index+4] == "null" {
+					if strings.ToLower(v.sql[index:index+4]) == "null" {
 						v.position = append(v.position, IsNullExprPosition{
 							Not:    isNullExprNode.Not,
 							Marker: utf8.RuneCountInString(v.sql[:paramMarkerExpr.OriginTextPosition()]),
