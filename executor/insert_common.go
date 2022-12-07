@@ -97,6 +97,9 @@ type InsertValues struct {
 	// We use mutex to protect routine from using invalid txn.
 	isLoadData bool
 	txnInUse   sync.Mutex
+	// fkChecks contains the foreign key checkers.
+	fkChecks   []*FKCheckExec
+	fkCascades []*FKCascadeExec
 }
 
 type defaultVal struct {
@@ -457,7 +460,7 @@ func insertRowsFromSelect(ctx context.Context, base insertCommon) error {
 	e := base.insertCommon()
 	selectExec := e.children[0]
 	fields := retTypes(selectExec)
-	chk := newFirstChunk(selectExec)
+	chk := tryNewCacheChunk(selectExec)
 	iter := chunk.NewIterator4Chunk(chk)
 	rows := make([][]types.Datum, 0, chk.Capacity())
 
@@ -775,7 +778,8 @@ func (e *InsertValues) lazyAdjustAutoIncrementDatum(ctx context.Context, rows []
 		}
 		// Use the value if it's not null and not 0.
 		if recordID != 0 {
-			err = e.Table.Allocators(e.ctx).Get(autoid.RowIDAllocType).Rebase(ctx, recordID, true)
+			alloc := e.Table.Allocators(e.ctx).Get(autoid.AutoIncrementType)
+			err = alloc.Rebase(ctx, recordID, true)
 			if err != nil {
 				return nil, err
 			}
@@ -868,7 +872,7 @@ func (e *InsertValues) adjustAutoIncrementDatum(ctx context.Context, d types.Dat
 	}
 	// Use the value if it's not null and not 0.
 	if recordID != 0 {
-		err = e.Table.Allocators(e.ctx).Get(autoid.RowIDAllocType).Rebase(ctx, recordID, true)
+		err = e.Table.Allocators(e.ctx).Get(autoid.AutoIncrementType).Rebase(ctx, recordID, true)
 		if err != nil {
 			return types.Datum{}, err
 		}
@@ -1089,7 +1093,6 @@ func (e *InsertValues) collectRuntimeStatsEnabled() bool {
 				SnapshotRuntimeStats:  snapshotStats,
 				AllocatorRuntimeStats: autoid.NewAllocatorRuntimeStats(),
 			}
-			e.ctx.GetSessionVars().StmtCtx.RuntimeStatsColl.RegisterStats(e.id, e.stats)
 		}
 		return true
 	}
@@ -1126,6 +1129,13 @@ func (e *InsertValues) batchCheckAndInsert(ctx context.Context, rows [][]types.D
 			defer snapshot.SetOption(kv.CollectRuntimeStats, nil)
 		}
 	}
+	sc := e.ctx.GetSessionVars().StmtCtx
+	for _, fkc := range e.fkChecks {
+		err = fkc.checkRows(ctx, sc, txn, toBeCheckedRows)
+		if err != nil {
+			return err
+		}
+	}
 	prefetchStart := time.Now()
 	// Fill cache using BatchGet, the following Get requests don't need to visit TiKV.
 	// Temporary table need not to do prefetch because its all data are stored in the memory.
@@ -1136,6 +1146,7 @@ func (e *InsertValues) batchCheckAndInsert(ctx context.Context, rows [][]types.D
 	}
 
 	if e.stats != nil {
+		e.stats.FKCheckTime += prefetchStart.Sub(start)
 		e.stats.Prefetch += time.Since(prefetchStart)
 	}
 
@@ -1265,6 +1276,14 @@ func (e *InsertValues) addRecordWithAutoIDHint(ctx context.Context, row []types.
 	if e.lastInsertID != 0 {
 		vars.SetLastInsertID(e.lastInsertID)
 	}
+	if !vars.StmtCtx.BatchCheck {
+		for _, fkc := range e.fkChecks {
+			err = fkc.insertRowNeedToCheck(vars.StmtCtx, row)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1275,6 +1294,7 @@ type InsertRuntimeStat struct {
 	*autoid.AllocatorRuntimeStats
 	CheckInsertTime time.Duration
 	Prefetch        time.Duration
+	FKCheckTime     time.Duration
 }
 
 func (e *InsertRuntimeStat) String() string {
@@ -1297,9 +1317,8 @@ func (e *InsertRuntimeStat) String() string {
 			buf.WriteString(", rpc: {")
 			buf.WriteString(e.SnapshotRuntimeStats.String())
 			buf.WriteString("}")
-			return buf.String()
 		}
-		return ""
+		return buf.String()
 	}
 	if allocatorStatsStr != "" {
 		buf.WriteString("prepare: {total: ")
@@ -1317,6 +1336,9 @@ func (e *InsertRuntimeStat) String() string {
 			execdetails.FormatDuration(e.CheckInsertTime),
 			execdetails.FormatDuration(e.CheckInsertTime-e.Prefetch),
 			execdetails.FormatDuration(e.Prefetch)))
+		if e.FKCheckTime > 0 {
+			buf.WriteString(fmt.Sprintf(", fk_check: %v", execdetails.FormatDuration(e.FKCheckTime)))
+		}
 		if e.SnapshotRuntimeStats != nil {
 			if rpc := e.SnapshotRuntimeStats.String(); len(rpc) > 0 {
 				buf.WriteString(fmt.Sprintf(", rpc:{%s}", rpc))
@@ -1334,6 +1356,7 @@ func (e *InsertRuntimeStat) Clone() execdetails.RuntimeStats {
 	newRs := &InsertRuntimeStat{
 		CheckInsertTime: e.CheckInsertTime,
 		Prefetch:        e.Prefetch,
+		FKCheckTime:     e.FKCheckTime,
 	}
 	if e.SnapshotRuntimeStats != nil {
 		snapshotStats := e.SnapshotRuntimeStats.Clone()
@@ -1379,6 +1402,7 @@ func (e *InsertRuntimeStat) Merge(other execdetails.RuntimeStats) {
 		}
 	}
 	e.Prefetch += tmp.Prefetch
+	e.FKCheckTime += tmp.FKCheckTime
 	e.CheckInsertTime += tmp.CheckInsertTime
 }
 
