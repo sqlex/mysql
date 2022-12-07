@@ -54,7 +54,7 @@ func (s *Session) GetPlan(ctx context.Context, sql string) (core.Plan, error) {
 	}
 	//在方法结束时回滚
 	defer s.Session.RollbackTxn(ctx)
-	err = core.Preprocess(s, stmt, core.InPrepare)
+	err = core.Preprocess(ctx, s, stmt, core.InPrepare)
 	if err != nil {
 		return nil, errors.Wrap(err, "SQL语句处理失败")
 	}
