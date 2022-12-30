@@ -1,6 +1,5 @@
 package main
 
-import "C"
 import (
 	"bytes"
 	"context"
@@ -18,12 +17,6 @@ import (
 	"sync"
 	"unicode/utf8"
 )
-
-//export FFIInvoke
-func FFIInvoke(reqJson string) *C.char {
-	respJsonStr := container.InvokeByData(reqJson)
-	return C.CString(respJsonStr)
-}
 
 // DatabaseAPI 业务模块
 type DatabaseAPI struct {
