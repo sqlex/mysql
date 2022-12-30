@@ -1,5 +1,9 @@
 package main
 
+// #cgo darwin CFLAGS: -I${SRCDIR}/../../jni_headers -I${SRCDIR}/../../jni_headers/darwin
+// #cgo windows CFLAGS: -I${SRCDIR}/../../jni_headers -I${SRCDIR}/../../jni_headers/windows
+// #cgo linux CFLAGS: -I${SRCDIR}/../../jni_headers -I${SRCDIR}/../../jni_headers/linux
+//
 // #include <jni.h>
 // #include <stdlib.h>
 //
