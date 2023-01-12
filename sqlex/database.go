@@ -48,6 +48,12 @@ func (d *Database) CreateSessionOnDatabase(ctx context.Context, database string)
 	if err != nil {
 		return nil, err
 	}
+	//session变量初始化
+	//默认关闭clustered index
+	err = se.SetGlobalSysVar(ctx, "tidb_enable_clustered_index", "OFF")
+	if err != nil {
+		return nil, err
+	}
 	s = &Session{
 		Session: se,
 		dbName:  database,
